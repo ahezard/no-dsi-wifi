@@ -1,0 +1,898 @@
+;:----------------- NDS7 Bootcode Decryption
+;------------------
+.if with_blowfish
+;------------------
+nds7_dump_bios:  ;in: r0=src, r1=dst, r2=len
+ ;*** this method can dump ALL 4000h bytes, thanks Damien Good 1/2006
+ ldr  r7,=05ech+1  ;getbyte entry address
+ add  r8,=@@ret+1  ;getbyte return address
+@@lop:
+ push r2,r4,r6,r7,r8                            ;\
+ sub  r3,r0,12h       ;r3=src-12h               ; prepare/enter getbyte
+ bx   r7                                        ;/
+ .thumb                                         ;\
+;following 2 THUMB opcodes executed at ROM:05ECh;
+;ldrb r3,[r3,12h]     ;getbyte [src-12h+12h]    ; execute & return from getbyte
+;pop  r2,r4,r6,r7,pc  ;return in THUMB state    ;
+@@ret:    ;above POP cannot switch to ARM,      ;
+ bx   pc  ;switch to ARM, and jump to $+4       ;
+ nop      ;padding for above $+4                ;
+ .arm                                           ;/
+ strb r3,[r1],1    ;dst                         ;\
+ add  r0,1         ;src                         ; putbyte, and lop next
+ subs r2,1         ;len                         ;/
+ bne  @@lop
+ bx   lr
+;------------------
+bswap_r0:
+ push r1,lr           ;r0=aabbccdd
+ bic  r1,r0,0ffh      ;r1=aabbcc00
+ bic  r1,0ff0000h     ;r1=aa00cc00
+ xor  r0,r1           ;r0=00bb00dd
+ mov  r0,r0,ror 8     ;r0=dd00bb00
+ add  r0,r0,r1,ror 24 ;r0=ddccbbaa
+ pop  r1,pc
+;------------------
+crypt_64bit_up:
+ push r0-r12,lr
+ ldr  r10,=keybuf+00h ;start
+ mov  r11,+4          ;step
+ b    crypt_64bit_inj
+;- - - - ----------
+crypt_64bit_down:
+ push r0-r12,lr
+ ldr  r10,=keybuf+44h ;start
+ mov  r11,-4          ;step
+;- - - - ----------
+crypt_64bit_inj:
+ ldmia [r1],r2,r3               ;-get original data
+ ldr  r6,=keybuf+048h   ;=keybuf+048h
+ add  r7,r6,0400h       ;=keybuf+448h
+ add  r8,r6,0800h       ;=keybuf+848h
+ add  r9,r6,0c00h       ;=keybuf+C48h
+ mov  r12,10h    ;=lopcount     ;\
+@@lop:                          ;
+ ldr  r0,[r10],r11 ;IIJJKKLLh   ; crypt by first 16 entries
+ xor  r3,r0                     ;
+
+;crypt_word:  ;in: r3=IIJJKKLLh, r2=oldval - out: r0=r2 XOR crypt
+ and   r4,r3,0ff000000h ;II000000h      ;\get crypt0, [II*4+keybuf+048h]
+ ldr   r0,[r6,r4,ror 24-2]              ;/
+ and   r4,r3,000ff0000h ;00JJ0000h      ;\
+ ldr   r4,[r7,r4,ror 16-2]              ; add crypt1, [JJ*4+keybuf+448h]
+ add   r0,r4                            ;/
+ and   r4,r3,00000ff00h ;0000KK00h      ;\
+ ldr   r4,[r8,r4,ror 8-2]               ; xor crypt2, [KK*4+keybuf+848h]
+ xor   r0,r4                            ;/
+ and   r4,r3,0000000ffh ;000000LLh      ;\
+ ldr   r4,[r9,r4,ror 32-2]              ; add crypt3, [LL*4+keybuf+C48h]
+ add   r0,r4                            ;/
+ xor   r0,r2                            ;-return value
+
+ mov  r2,r3 ;r2=old r3          ;
+ mov  r3,r0 ;r3=crypted r2      ;
+ subs r12,1                     ;
+ bne  @@lop                     ;/
+ ldr  r0,[r10],r11              ;\
+ xor  r0,r3                     ; xor result by last two entries
+ ldr  r3,[r10],r11              ;
+ xor  r3,r2                     ;/
+ stmia [r1],r0,r3               ;-store result
+ pop  r0-r12,pc
+;------------------
+apply_keycode:
+ push r0-r12,lr
+ ldr  r1,=keycode+4                     ;\
+ bl   crypt_64bit_up                    ; crypt keycode
+ sub  r1,4 ;keycode+0                   ;
+ bl   crypt_64bit_up                    ;/
+ ldr  r6,=keymode    ;modulo2           ;\
+ ldr  r6,[r6]                           ;
+ ldr  r2,=keybuf     ;start1            ;
+ add  r3,r2,48h      ;end1              ;
+ ldr  r4,=keycode    ;start2            ;
+ add  r5,r4,r6       ;end2              ;
+@@lop1:                                 ;
+ ldr  r0,[r4],4      ;ptr2              ; XOR first part of keybuf
+ bl   bswap_r0                          ; by bswapped keycode with modulo
+ ldr  r1,[r2]        ;ptr1              ;
+ xor  r1,r0                             ;
+ str  r1,[r2],4      ;ptr1              ;
+ cmp  r4,r5          ;ptr2,end2         ;
+ subeq r4,r6         ;start2            ;
+ cmp  r2,r3          ;ptr1,end1         ;
+ bne  @@lop1                            ;/
+ mov  r0,0  ;\scratch_64bit = zero      ;\
+ mov  r1,0  ;/                          ;
+ ldr  r2,=keybuf       ;start           ;
+ ldr  r3,=keybuf+1048h ;end             ;
+@@lop2:                                 ; self-modify whole keybuf
+ push r0-r3 ;store r0,r1,r2,r3          ; by keybuf-crypted scratch
+ mov  r1,sp ;addr of r0,r1              ;
+ bl   crypt_64bit_up ;io:[r1+0] [r1+4]  ;
+ pop  r0-r3 ;r0,r1 modified, r2,r3=same ;
+ str  r1,[r2],4                         ;
+ str  r0,[r2],4                         ;
+ cmp  r2,r3 ;ptr,end                    ;
+ bne  @@lop2                            ;/
+ pop  r0-r12,pc
+;------------------
+init_keycode:
+ ;in: r0=gamecode/idcode
+ ;in: r1=keymode (08h=gamecart/0Ch=firmware)
+ ;in: r2=keylevel (1..3 = apply once,twice,thrice) (bit7: dsi-mode)
+ ;---
+ push  r0-r12,lr
+ mov   r3,r2,lsr 7  ;dsikey (from r2.bit7)
+ and   r2,7fh       ;keylevel
+.errif keydsi<>keyinfo+0ch
+ ldr   r8,=keyinfo                              ;\
+ mov   r10,r2         ;keylevel                 ;
+ mov   r11,r3         ;keydsi                   ;
+ ldmia [r8],r4,r5,r6,r7  ;keyname,keymode,keylevel,keydsi
+ stmia [r8]!,r0,r1,r2,r3 ;keyname,keymode,keylevel,keydsi
+ cmp   r4,r0 ;keyname                           ;
+ cmpeq r5,r1 ;keymode                           ; exit if already gained
+ cmpeq r7,r3 ;keydsi                            ; the desired key
+ bne   @@regain                                 ;
+ cmp   r6,r2 ;keylevel                          ;
+ beq   @@done    ;all same, exit                ;
+ bcs   @@regain  ;old level was higher          ;
+ cmp   r6,1      ;old level (1..2) (new is 2..3);
+ beq   @@rise_from_level_1                      ;
+ b     @@rise_from_level_2                      ;
+@@regain:                                       ;/
+ mov   r1,r0,lsr 1    ;ID/2 ;above [r8]! sets   ;\
+ mov   r2,r0,lsl 1    ;ID*2 ;r8=keyinfo+10h     ; init keycode (gamecode/idcode)
+ stmia [r8],r0,r1,r2  ;ID,ID/2,ID*2             ;/
+;.if with_overcomplicated_bios_dump
+;  ldr   r0,=xboo_header                          ;\
+;  ldr   r0,[r0,1ch] ;=bios key copy              ;
+;  add   r0,30h ;skip 1st 30h bytes (bios vectors); load original BIOS key seed
+;  ldr   r1,=keybuf                               ; from copy in firmware
+;  ldr   r2,=1048h                                ;
+;  bl    firmware_read_block                      ;/
+;.else
+;  mov   r0,30h      ;src                         ;\
+;  ldr   r1,=keybuf  ;dst                         ; load original BIOS key seed
+;  ldr   r2,=1048h   ;len                         ; directly from protected BIOS
+;  bl    nds7_dump_bios                           ;/
+;.endif
+ ldr   r0,=nds_blowfish_key                     ;\
+ ldr   r0,[r0]                                  ;
+ ldr   r1,=5F20D599h  ;99 D5 20 5F..            ; verify that blowfish key
+ cmp   r0,r1                                    ; was loaded from ITCM (DSi)
+ beq   @@blowfishkey_okay                       ; or from BIOS (NDS)
+ ldr   r1,=txt_blowfishkey_notfound  ;\         ; (needed ONLY if uploaded
+ bl    wrstr_r1                      ; fatal    ; title IS encrypted)
+ b     $                             ;/         ;
+@@blowfishkey_okay:                             ;/
+ ldr  r0,=nds_blowfish_key                      ;\
+ .if with_rom_cart                              ;
+   cmp   r11,0          ;keydsi                 ;
+   ldrne r0,=dsi_blowfish_key                   ; load original BIOS key seed
+ .endif                                         ; previously created RAM copy
+ ldr   r1,=keybuf  ;dst                         ;
+ ldr   r2,=1048h   ;len                         ;
+ bl    memcopy_bytewise                         ;/
+ bl    apply_keycode                            ;-1st apply
+@@rise_from_level_1:
+ cmp   r10,2          ;keylevel                 ;\2nd apply
+ blcs  apply_keycode                            ;/
+@@rise_from_level_2:
+ ldr   r3,=keycode                              ;\
+ cmp   r10,3          ;keylevel                 ;
+ ldmia [r3],r0,r1,r2  ;ID0,ID1,ID2              ;
+ movcs r1,r1,lsl 1    ;ID1*2                    ; 3rd apply
+ movcs r2,r2,lsr 1    ;ID2/2                    ;
+ stmia [r3],r0,r1,r2  ;ID0,ID1*2,ID2/2          ;
+ blcs  apply_keycode                            ;/
+@@done:
+ pop   r0-r12,pc
+;---
+txt_blowfishkey_notfound db 'Cannot load blowfish key',0dh,'from rom/itcm',0
+.align 4
+;------------------
+secure_area_extra_decryption:   ;in: r11=carthdr
+ push r0-r12,lr
+ ldr  r2,=0e7ffdeffh                            ;\
+ ldr  r3,=0e7ffdeffh                            ; skip decryption/CRC if already
+ bl   @@check_id_field_r2_r3                    ; decrypted (eg. by NDS bios)
+ beq  @@secure_bad ;skip                        ;/
+ ldr  r1,[r11,28h] ;nds9 ram_dst, secure_base   ;\
+ sub  r0,r1,2000000h  ;mem_base                 ;
+ ldr  r2,=3bfe00h     ;mem_size                 ; secure ram addr
+ cmp  r0,r2           ;mem_size                 ;
+ bcs  @@secure_bad    ;above/equal -> bad       ;/
+ ldr  r2,[r11,20h] ;nds9 rom_src                ;\calc secure area length,
+ bic  r2,00ffh     ;secure_start (align 100h)   ; len=8000h-arm9_rom_src,
+ bic  r2,0f00h     ;secure_start (align 1000h)  ;   src=4000h,5000h,6000h,7000h
+ cmp  r2,4000h     ;secure_start (min 4000h)    ;   len=4000h,3000h,2000h,1000h
+ bcc  @@secure_bad ;below -> bad                ; (note: the "arm9 size" entry,
+ rsbs r2,r2,8000h  ;secure_len   (end-start)    ; in cart header [02Ch],
+ bls  @@secure_bad   ;(len=lower/zero)          ;/does NOT affect secure_len!)
+ ;bl   calc_crc16_r1_r2                         ;\calculate secure_area crc
+ ;XXX  store result at 27FF80Ah                 ;/(before decryption)
+ bl   @@check_id_field                          ;\skip decryption if the
+ beq  @@already_decrypted                       ;/rom-image is unencrypted
+ bl   @@check_2k_zerofilled                     ;\skip if zerofilled (just destroy, without needing "nds_blowfish_key" to be present in memory)
+ beq  @@empty_unencrypted                       ;/
+ ;---
+ ldr  r0,[r11,0ch] ;gamecode                    ;\
+ mov  r1,08h       ;modulo (8=gamecard)         ; apply twice
+ mov  r2,02h       ;level  (2=repeat twice)     ;
+ bl   init_keycode ;init (unless already)       ;/
+ ldr  r1,[r11,28h] ;nds9 ram_dst, secure_base   ;\decrypt ID field once
+ bl   crypt_64bit_down                          ;/
+ ldr  r0,[r11,0ch] ;gamecode                    ;\
+ mov  r1,08h       ;modulo (8=gamecard)         ; apply third time
+ mov  r2,03h       ;level  (3=repeat thrice)    ;
+ bl   init_keycode ;init (unless already)       ;/
+ ldr  r1,[r11,28h] ;nds9 ram_dst, secure_base   ;\
+ mov  r2,800h                                   ;
+@@decode_lop:                                   ; decrypt whole area,
+ bl   crypt_64bit_down                          ; including ID field another time
+ add  r1,8                                      ;
+ subs r2,8                                      ;
+ bne  @@decode_lop                              ;/
+ ;---
+@@already_decrypted:
+@@empty_unencrypted:
+ bl   @@check_id_field                          ;\
+ movne r2,800h        ;length of whole 2K       ; check the ID field,
+ moveq r2,8           ;length of ID field       ; should be "encryObj"
+ ldr  r0,=0e7ffdeffh  ;fillvalue                ; if it matches, then destroy
+ ldr  r1,[r11,28h] ;nds9 ram_dst, secure_base   ; only 8 bytes (the ID field),
+@@destroy_lop:                                  ; otherwise destroy the
+ str  r0,[r1],4                                 ; whole area
+ subs r2,4                                      ;
+ bne  @@destroy_lop                             ;/
+@@secure_bad:
+ pop  r0-r12,pc
+;---
+@@check_id_field:
+ ldr   r2,=72636E65h
+ ldr   r3,=6A624F79h
+@@check_id_field_r2_r3:
+ push  r0,r1,lr
+ ldr   r1,[r11,28h] ;nds9 ram_dst, secure_base
+ ldmia [r1],r0,r1
+ cmp   r0,r2
+ cmpeq r1,r3
+ pop   r0,r1,pc     ;out: zf
+;---
+@@check_2k_zerofilled:
+ ldr   r1,[r11,28h] ;nds9 ram_dst, secure_base
+ mov   r2,800h
+ mov   r0,0
+@@lop:
+ ldr  r3,[r1],4
+ orr  r0,r3
+ subs r2,4
+ bne  @@lop
+ cmp  r0,0      ;check if all zero
+ bx   lr        ;out: zf
+;------------------
+.endif ;with_blowfish
+;------------------
+;:----------------- MBK
+;------------------
+arm9_enter_nds_mode:
+ ldr  r1,=dsi_flag              ;\
+ ldrb r0,[r1]  ;0=nds, 1=dsi    ; exit if NDS console
+ cmp  r0,0                      ;
+ bxeq lr                        ;/
+ ldr  r1,=__NDSHeader           ;\
+ ldrb r0,[r1,12h]  ;unitcode    ; exit if DSi cart
+ tst  r0,2                      ;
+ bxne lr                        ;/
+;- - -
+ push lr
+
+;ldr r1,=2FFF800h // ldr r0,=000003c2h  // str r0,[r1]
+;ldr r1,=2FFF804h // ldr r0,=000003c2h  // str r0,[r1]
+;ldr r1,=2FFF808h // ldr r0,=09a88cae3h // str r0,[r1]
+;ldr r1,=2FFF810h // ldr r0,=0ffffh     // str r0,[r1]
+;ldr r1,=2FFF850h // ldr r0,=05835h     // str r0,[r1]
+;ldr r1,=2FFF860h // ldr r0,=2380000h   // str r0,[r1]    ;XXX cart ram addr
+;ldr r1,=2FFF868h // ldr r0,=1fe00h     // str r0,[r1]    ;XXX
+;ldr r1,=2FFF874h // ldr r0,=359ah      // str r0,[r1]
+;ldr r1,=2FFF880h // ldr r0,=7h         // str r0,[r1]
+
+;; ldr  r0,=2FFFE00h ;src         ;\
+;; ldr  r1,=2FFFA80h ;dst         ; copy
+;; mov  r2,160h      ;len         ;
+;; bl   memcopy_bytewise          ;/
+
+
+ ldr     r1,=2FFFDFAh     ;\
+ mov     r0,0h            ;
+ strb    r0,[r1]       ;? ;/ DSi Warmboot Flag
+
+ ldr  r1,=2FFFC10h ;nds7 bios crc
+ ldr  r0,=5835h    ;"nds7 bios crc"
+ strh r0,[r1]    ;nds7 bios crc
+
+ ldr  r0,=2fffd80h              ;\
+ mov  r1,80h                    ;
+ bl   zerofill_bytewise         ;/
+ ldr  r0,=2ffff80h              ;\
+ mov  r1,80h                    ;
+ bl   zerofill_bytewise         ;/
+
+.if 0
+ ldr  r1,=2fffc40h              ;\
+ mov  r0,3                      ;
+ strb r0,[r1]                   ;/
+ ldr  r1,=2fffce6h              ;\
+ mov  r0,0                      ;
+ strh r0,[r1,0]                 ;/
+ strh r0,[r1,2]                 ;/
+ ldr  r1,=2fffcfah              ;\
+ ldr  r0,=1041h                 ;
+ strh r0,[r1]                   ;/
+ ldr  r1,=2fffdfbh              ;\
+ mov  r0,1                      ;
+ strb r0,[r1]                   ;/
+.endif
+
+ ldr  r0,=2FFE000h ;src         ;\reloc to 4MB RAM area
+ ldr  r1,=23FE000h ;dst         ; (NDS needs only last 800h bytes, however,
+ mov  r2,2000h     ;len         ; unlaunch needs min 2000h with __DSiHeader)
+ bl   memcopy_bytewise          ;/
+ bl   arm9_cache_FlushAll       ;-flush cache and write buffer
+ mov  r0,0080h                  ;\select 67.03MHz ARM9 clock, and
+ bl   arm9_set_scfg_clk9        ;/disable special DSi clocks
+ ldr  r1,=4004000h              ;\
+ mov  r0,0                      ; switch to 4MB RAM mode
+ str  r0,[r1,08h] ;SCFG_EXT9    ;/
+ pop  pc
+;------------------
+arm7_enter_nds_mode:
+ ldr  r1,=dsi_flag              ;\
+ ldrb r0,[r1]  ;0=nds, 1=dsi    ; exit if NDS console
+ cmp  r0,0                      ;
+ bxeq lr                        ;/
+ ldr  r1,=__NDSHeader           ;\
+ ldrb r0,[r1,12h]  ;unitcode    ; check if NDS/DSi cart
+ tst  r0,2                      ;
+ bne  @@to_dsi_mode             ;/
+;- - -
+@@to_nds_mode:
+ push lr
+ ;---
+ ;*** additionally needed for NDS mode (but done elsewhere) is this:
+ ;*** - enter NDS TSC mode (depending on carthdr[1BCh].bit24, may be done even for DSi titles)
+ ;*** - set ARM7 POSTFLG register (also done for DSi titles, too, but particulary REQUIRED for NDS titles like DS Download Play or Eragon demo)
+ ;---
+ldr r1,=4000000h+134h        // ldr r0,=800fh // strh r0,[r1]  ;RCNT
+ldr r1,=4000000h+REG_RTC_CNT // mov r0,7bh    // strb r0,[r1]  ;RTC
+
+mov  r1,0dh ;backlights/sound                  ;\backlights & amplifier
+bl   powerman_set_ctrl0_r1                     ;/(not yet enabled at boot)
+
+ mov  r1,012h // mov r0,000h // bl set_bptwl_reg_r1_to_r0  ;-pwrbutt: auto-res
+
+
+ ldr  r0,=3ffffc0h              ;\
+ mov  r1,38h                    ;
+ bl   zerofill_bytewise         ;/
+
+ ldr  r1,=4004000h              ;\
+ mov  r0,-1                     ; switch to NDS mode
+ str  r0,[r1,00h] ;SCFG_ROM     ; (caution: ARM9 shouldn't use IRQs/SWIs
+ ldr  r0,=12A03000h             ; while switching to NDS-ROMs)
+;mov  r0,0                      ;
+ str  r0,[r1,08h] ;SCFG_EXT7    ;/
+ pop  pc
+;---
+@@to_dsi_mode:
+ push lr
+ mov  r1,012h // mov r0,001h // bl set_bptwl_reg_r1_to_r0  ;-pwrbutt: irq
+ pop  pc
+;------------------
+send_tsc_list_r1:
+ push lr
+@@init_lop:
+ ldrb r2,[r1],1  ;len (1=last)          ;\
+ cmp  r2,0       ;len                   ; get len, check if loop done
+ beq  @@init_done                       ;/
+ .if verbose_tsc_init                   ;\
+   ldrb r3,[r1]                         ;
+ .endif                                 ;/
+@@cmd_data_lop:                         ;\
+ ldrb r0,[r1],1                         ;
+ bl   touchscr_get_send  ;io: r2=len    ;
+ bne  @@cmd_data_lop                    ;/
+ .if verbose_tsc_init                   ;\
+   tst  r3,1                            ;
+   blne wrhex8bit                       ;
+ .endif                                 ;/
+;ldr  r0,=82E9h/4  ;33513/4 decimal     ;\delay (not required, though original
+;swi  03h shl 16 ;waitbyloop            ;/firmware does so after some writes)
+ b    @@init_lop
+;---
+@@init_done:
+ pop  pc
+;---
+nds_mode_tsc_init_list:
+ ;below ONLY for NDS TSC mode (or when carthdr[1BFh] wants so)
+ db 1+1, 00h*2+0, 001h          ;--bank 01h
+;db 1+1, 26h*2+0, 0ACh          ;TSC[1:26h]=ACh ;\special setting (when found special gamecode)
+;db 1+1, 27h*2+0, 0ACh          ;TSC[1:27h]=ACh ;/
+ db 1+1, 26h*2+0, 0A7h          ;TSC[1:26h]=A7h ;\normal setting (for any other gamecodes)
+ db 1+1, 27h*2+0, 0A7h          ;TSC[1:27h]=A7h ;/
+ db 1+1, 2eh*2+0, 003h          ;TSC[1:2Eh]=03h ;MICBIAS
+ db 1+1, 00h*2+0, 003h          ;--bank 03h
+ db 1+1, 03h*2+0, 000h          ;TSC[3:03h]=00h ;SAR ADC Control 2
+ db 1+1, 00h*2+0, 001h          ;--bank 01h
+ db 1+1, 21h*2+0, 020h          ;TSC[1:21h]=20h ;HP Output Drivers POP Removal Settings
+ db 1+1, 22h*2+0, 0f0h          ;TSC[1:22h]=F0h ;Output Driver PGA Ramp-Down Period Control (70h OR 80h)
+ db 1+1, 22h*2+0, 070h          ;TSC[1:22h]=70h ;Output Driver PGA Ramp-Down Period Control (bit7=0)
+ db 1+1, 00h*2+0, 000h          ;--bank 00h
+ db 1+1, 52h*2+0, 080h          ;TSC[0:52h]=80h ;ADC Digital Volume Control Fine Adjust
+ db 1+1, 51h*2+0, 000h          ;TSC[0:51h]=00h ;ADC Digital Mic
+ db 1+1, 00h*2+0, 003h          ;--bank 03h
+;db 1+1, 02h*2+1, 000h          ;READ[3:02h] (returns 00h)
+ db 1+1, 02h*2+0, 080h          ;TSC[3:02h].Bit7=1 ;SAR ADC Control 1
+ db 1+1, 00h*2+0, 0ffh          ;--bank FFh
+ db 1+1, 05h*2+0, 000h          ;TSC[FFh:05h]=00h ;TSC final enter NDS mode
+ ;and pwerman[0].bit0=1 (bit0=sound amplifier on) (actually part of TSC chip, accessed via "POWERMAN" SPI chipselect signal)
+ db 0
+;---
+.align 4
+;------------------
+set_bptwl_reg_r1_to_r0:
+ push r0-r3,lr
+ push r0  ;data
+ push r1  ;index
+ mov  r0,04ah+0 // mov r1,082h // bl   bptwl_send_data ;device
+ pop  r0        // mov r1,080h // bl   bptwl_send_data ;index8bit
+ pop  r0        // mov r1,080h // bl   bptwl_send_data ;data8bit  ;XXX r1=81h(stop) would result in DTA=DTA*2+1 !!!
+ pop  r0-r3,pc
+;------------------
+read_bptwl_reg_r1:
+ push r1-r3,lr
+ push r1  ;index
+ mov  r0,04ah+0 // mov r1,082h // bl   bptwl_send_data ;device
+ pop  r0        // mov r1,080h // bl   bptwl_send_data ;index8bit
+ mov  r0,04ah+1 // mov r1,082h // bl   bptwl_send_data ;device
+                   mov r1,0a1h // bl   bptwl_get_data  ;data8bit
+ pop  r1-r3,pc  ;out: r0=data
+;------------------
+bptwl_send_data:
+ push r2,r5,lr
+ ldr  r5,=4004500h  ;i2c base
+@@i2c_wait_lop1:                        ;\
+ ldrb r2,[r5,1]  ;cnt                   ; wait
+ tst  r2,80h                            ;
+ bne  @@i2c_wait_lop1                   ;/
+ mov  r2,180h                           ;\
+@@i2c_waitbyloop:                       ; delay (required for BPTWL chip)
+ subs r2,1                              ;
+ bne  @@i2c_waitbyloop                  ;/
+ strb r0,[r5,0]  ;dta                   ;-output data
+ strb r1,[r5,1]  ;cnt                   ;-output control
+@@i2c_wait_lop2:                        ;\
+ ldrb r2,[r5,1]  ;cnt                   ; wait
+ tst  r2,80h                            ;
+ bne  @@i2c_wait_lop2                   ;/
+ ldrb r2,[r5,1]  ;cnt                   ;\test ack
+ tst  r2,10h     ;ack                   ;/
+ pop  r2,r5,pc
+;------------------
+bptwl_get_data:
+ push r2,r5,lr
+ ldr  r5,=4004500h  ;i2c base
+@@i2c_wait_lop1:                        ;\
+ ldrb r2,[r5,1]  ;cnt                   ; wait
+ tst  r2,80h                            ;
+ bne  @@i2c_wait_lop1                   ;/
+ mov  r2,180h                           ;\
+@@i2c_waitbyloop:                       ; delay (required for BPTWL chip)
+ subs r2,1                              ;
+ bne  @@i2c_waitbyloop                  ;/
+ strb r1,[r5,1]  ;cnt                   ;-output control
+@@i2c_wait_lop2:                        ;\
+ ldrb r2,[r5,1]  ;cnt                   ; wait
+ tst  r2,80h                            ;
+ bne  @@i2c_wait_lop2                   ;/
+ ldrb r0,[r5,0]  ;dta                   ;-get data
+;; ldrb r2,[r5,1]  ;cnt                   ;\test ack
+;; tst  r2,10h     ;ack                   ;/
+ pop  r2,r5,pc
+;------------------
+arm9_map_mbk_normal:
+ ldr  r0,=2FFE000h+1AFh         ;\
+ ldrb r0,[r0]                   ; WRAMCNT from cart header
+ ldr  r1,=4000247h              ;
+ strb r0,[r1]  ;WRAMCNT         ;/
+ ldr  r0,=2FFE000h+180h         ;\
+ ldr  r1,=4004040h ;MBK1-5      ; MBK1-5 from cart header, and
+ mov  r2,(5+3)*4                ; MBK6-8 from cart header for ARM9
+ b    memcopy_bytewise          ;/
+;------------------
+arm9_map_mbk_swapped:
+ ldr  r0,=2FFE000h+1AFh         ;\
+ ldrb r0,[r0]                   ; WRAMCNT from cart header
+ ldr  r1,=4000247h              ; but,
+ eor  r3,3 ;flip arm7 <--> arm9 ; with ARM7 <--> ARM9 flipped
+ strb r0,[r1]  ;WRAMCNT         ;/
+ ldr  r0,=2FFE000h+180h         ;\
+ ldr  r1,=4004040h ;MBK1-5      ;
+ mov  r2,5*4                    ; MBK1-5 from cart header
+@@mbk12345_lop:                 ; but,
+ ldrb r3,[r0],1                 ; with ARM7 <--> ARM9 flipped
+ eor  r3,1 ;flip arm7 <--> arm9 ;
+ strb r3,[r1],1                 ;
+ subs r2,1                      ;
+ bne  @@mbk12345_lop            ;/
+ ldr  r0,=2FFE000h+1A0h         ;\
+ ldr  r1,=4004054h ;MBK6-8      ; MBK6-8 from cart header for ARM7
+ mov  r2,3*4                    ; mapped to ARM9 side (instead ARM7)
+ b    memcopy_bytewise          ;/
+;------------------
+arm7_call_arm9:
+ push r4,lr
+ ldr  r4,=arm9_call_addr
+ str  r0,[r4]                   ;-
+ mov  r0,chr_call               ;\
+ bl   wrchr_r0                  ;/
+@@busy_lop:                     ;\
+ ldr  r0,[r4]                   ;
+ cmp  r0,0                      ;
+ bne  @@busy_lop                ;/
+ pop  r4,pc
+;------------------
+arm7_map_mbk_from_arm7:  ;normal setting for ARM7
+ push lr
+ ldr  r1,=4004060h ;MBK9        ;\MBK9 select ARM7 as master
+ mov  r0,-1                     ; (for below MBK1-5 init)
+        MOV r0,0
+ str  r0,[r1]                   ;/
+.if 1
+ ldr  r0,=arm9_map_mbk_normal
+ bl   arm7_call_arm9
+.else
+ ldr  r0,=2FFE000h+180h         ;\
+ ldr  r1,=4004040h ;MBK1-5      ; MBK1-5 from cart header
+ mov  r2,5*4                    ;
+ bl   memcopy_bytewise          ;/
+.endif
+ ldr  r0,=2FFE000h+1A0h         ;\
+ ldr  r1,=4004054h ;MBK6-8,MBK9 ; MBK6-8 from cart header for ARM7, and
+ mov  r2,(3+1)*4                ; MBK9 final master selection
+ bl   memcopy_bytewise          ;/
+ pop  pc
+;------------------
+arm7_map_mbk_from_arm9:  ;special setting map ARM9 memory to ARM7 cpu
+ push lr                 ;(for cart loader running on ARM7 side)
+ ldr  r1,=4004060h ;MBK9        ;\MBK9 select ARM7 as master
+ mov  r0,-1                     ; (for below MBK1-5 init)
+        MOV r0,0
+ str  r0,[r1]                   ;/
+.if 1
+ ldr  r0,=arm9_map_mbk_swapped
+ bl   arm7_call_arm9
+.else
+ ldr  r0,=2FFE000h+180h         ;\
+ ldr  r1,=4004040h ;MBK1-5      ;
+ mov  r2,5*4                    ; MBK1-5 from cart header
+@@mbk12345_lop:                 ; but,
+ ldrb r3,[r0],1                 ; with ARM7 <--> ARM9 flipped
+ eor  r3,1 ;flip arm7 <--> arm9 ;
+ strb r3,[r1],1                 ;
+ subs r2,1                      ;
+ bne  @@mbk12345_lop            ;/
+.endif
+;- - -
+;XXX below should be topped to max addr 3800000h (or 3810000h)
+;    that, to avoid clashes with IRQ vector at 3FFFxxxh
+;    and, with STACK at 380xxxxh (best/better move stack to 3FFxxxxh)
+;- - -
+ ldr  r0,=2FFE000h+194h         ;\
+ ldr  r1,=4004054h ;MBK6-8      ; MBK6-8 from cart header for ARM9 mapped to ARM7
+ mov  r2,3*4                    ;
+ bl   memcopy_bytewise          ;/
+ pop  pc
+;------------------
+arm9_set_scfg_clk9:   ;in: r0=value
+ push r0-r12,lr
+ mov  r9,cpsr           ;-get old cpsr
+ orr  r1,r9,0c0h        ;\disable irqs (ensure ITCM during below write+delay)
+ mov  cpsr,r1           ;/(also ensure old/swapped ITCM not used by IRQs)
+ bl   @@reloc_swap
+
+ ldr  r1,=4004004h      ;\apply SCFG_CLK9 (bit0=arm9clk should be changed only
+ .if vram_code          ;
+   ldr  r2,=@@reloc_dst ;
+   blx  r2              ;
+ .else                  ;
+   bl   @@reloc_dst     ; by code in itcm, followed by 8 cycles delay)
+ .endif                 ;/
+ bl   @@reloc_swap
+ mov  cpsr,r9           ;-restore old cpsr
+ pop  r0-r12,pc
+;---
+@@reloc_dst equ 1FF8000h
+@@reloc_swap:
+ ldr  r1,=@@reloc_src
+ ldr  r2,=@@reloc_dst
+ mov  r3,@@reloc_len
+@@reloc_swap_lop:
+ ldr  r4,[r1]
+ ldr  r5,[r2]
+ str  r5,[r1],4
+ str  r4,[r2],4
+ subs r3,4
+ bne  @@reloc_swap_lop
+ bx   lr
+;---
+@@reloc_src:   ;in: r0=value, r1=addr
+ strh r0,[r1]   ;[4004004h] ;SCFG_CLK9
+ mov  r0,8              ;\
+@@wait_lop:             ; delay 8 cycles
+ subs r0,4              ;
+ bne  @@wait_lop        ;/
+ bx   lr
+@@reloc_len equ $-@@reloc_src
+;------------------
+;:----------------- Modcrypt
+;------------------
+do_modcrypt:
+ push r0-r12,lr
+ ldr  r4,=__DSiHeader           ;-
+ ldrb r0,[r4,12h] ;unitcode     ;\not on NDS carts
+ tst  r0,2                      ; (nor NDS-mode DSiware like DS Download play)
+ beq  @@no_modcrypt             ;/
+ ldrb r0,[r4,1ch] ;flags        ;\
+ tst  r0,2   ;bit1=modcrypted   ; only if modcrypted
+ beq  @@no_modcrypt             ;/
+ ldr  r1,=dsi_flag              ;\
+ ldrb r0,[r1]  ;0=nds, 1=dsi    ; not on NDS consoles
+ cmp  r0,0                      ;
+ beq  @@no_modcrypt             ;/
+
+ bl   @@init_modcrypt_aes_key
+
+ add  r8,r4,220h  ;modcrypt area 1      ;\
+ add  r9,r4,300h  ;modcrypt iv 1        ; area 1
+ bl   @@modcrypt_here                   ;/
+ add  r8,r4,228h  ;modcrypt area 2      ;\
+ add  r9,r4,314h  ;modcrypt iv 2        ; area 2
+ bl   @@modcrypt_here                   ;/
+
+@@no_modcrypt:
+ pop  r0-r12,pc
+;--- --- ---
+@@modcrypt_here:
+ push r0-r12,lr
+ bl   arm7_map_mbk_from_arm9  ;special setting map ARM9 memory to ARM7 cpu
+ add  r7,r4,020h  ;ARM9                 ;\
+ bl   @@modcrypt_here_here              ;/
+ add  r7,r4,1C0h  ;ARM9i                ;\
+ bl   @@modcrypt_here_here              ;/
+ bl   arm7_map_mbk_from_arm7  ;normal setting map ARM7 memory to ARM7 cpu
+ add  r7,r4,030h  ;ARM7                 ;\
+ bl   @@modcrypt_here_here              ;/
+ add  r7,r4,1D0h  ;ARM7i                ;\
+ bl   @@modcrypt_here_here              ;/
+ pop  r0-r12,pc
+;--- --- ---
+@@modcrypt_here_here: ;in: r7=data area info, in: r8=crypt area info, r9=ctr/iv
+
+ ;note: crypt.size can be rounded up or down (relative to rom-size):
+ ;* Cooking Coach: rounded UP to N*10h
+ ;* System Flaw: rounded DOWN to 4000h
+ push r0-r12,lr
+ ldr  r1,[r8,0]    ;modcrypt.rom.start  ;\    ebx
+ ldr  r2,[r8,4]    ;modcrypt.rom.size   ;     eax
+ ldr  r4,[r7,00h]  ;data.rom.start      ;     esi
+ ldr  r5,[r7,08h]  ;data.ram.start      ;     edi
+ ldr  r6,[r7,0ch]  ;data.size           ;/    ecx
+
+ subs r0,r1,r4 ;crypt.rom, src.rom ;\launcher accepts ONLY if crypt.start>=rom.start
+ blo  @@modcrypt_not_here       ;/
+
+ add  r5,r0    ;ram.addr (raise by above disp)
+ ;- - -
+ add  r6,1fh     ;\round-up size (as done by launcher)
+ and  r6,not 1fh ;/
+ add  r4,r6  ;src.rom.end (with rounded-up size)
+ add  r1,r2   ;crypt.rom.end
+ cmp  r1,r4      ;launcher accepts ONLY if crypt.end<=rom.end.rounded
+ bhi  @@modcrypt_not_here  ;-addr.end doesn't match
+ ;- - -
+ add  r6,r2,0fh    ;\siz, round-up to blk size (shouldn't be needed)
+ movs r6,r6,lsr 4  ;/siz, divide to num_aes_blks
+ beq  @@modcrypt_not_here  ;-skip if siz=zero
+;- - -
+        mov r8,0    ;index
+@@outer_lop:
+       @@blksiz equ 1000h   ;max FFFFh blocks (for AES hardware) (but DSi Sound has larger area, thus needs splitting; with manual IV increment)
+        mov  r7,r6  ;len
+        cmp  r7,@@blksiz ;0ff00h ;1000h
+        movhi r7,@@blksiz ;0ff00h ;1000h
+        sub  r6,r7
+
+
+ ldr  r4,=4004400h              ;-
+ mov  r0,0                      ;\disable
+ str  r0,[r4,00h] ;AES_CNT      ;/
+ mov  r0,0c00h                  ;\flush fifos
+ str  r0,[r4,00h] ;AES_CNT      ;/
+ mov  r0,r7,lsl 16 ;to bit16-31 ;\len   (XXX can be max FFFFh blocks, aka FFFF0h bytes, aka 0.999Mbytes)
+ str  r0,[r4,04h] ;AES_BLKCNT   ;/      (XXX DSi Sound has 1FEE0h blocks!)
+ ldmia [r9],r0,r1,r2,r3         ;\
+   adds r0,r0,r8;;;,lsr 4  ;iv.index ;
+   adcs r1,0                      ; set IV = (SHA1(xxx)+Index/10h)
+   adcs r2,0                      ; (whereas Index is always zero since
+   adcs r3,0                      ; launcher rejects data located anywhere else
+ str  r0,[r4,20h]  ;AES_IV      ; than at index=0 within modcrypt area)
+ str  r1,[r4,24h]  ;AES_IV      ;
+ str  r2,[r4,28h]  ;AES_IV      ;
+ str  r3,[r4,2ch]  ;AES_IV      ;/
+ ;- - - -
+ .if mod_dma
+   ldr  r3,=4004100h   ;NDMA
+   mov  r1,10h/4    ;words/block
+   mov  r2,r7,lsl 2 ;total words (blocks*4)
+  ;- - -
+   ldr  r0,=4004408h ;AES_WRFIFO (W)
+   str  r5, [r3,04h+1ch*0]  ;SAD=src
+   str  r0, [r3,08h+1ch*0]  ;DAD=AES
+   str  r2, [r3,0ch+1ch*0]  ;TCNT
+   str  r1, [r3,10h+1ch*0]  ;WCNT
+   mov  r0,0  ;?
+   str  r0, [r3,14h+1ch*0]  ;BCNT
+   ldr  r0,=8a030800h   ;AES-IN
+   str  r0, [r3,1ch+1ch*0]  ;CNT
+  ;- - -
+   ldr  r0,=400440Ch ;AES_RDFIFO (R)
+   str  r0, [r3,04h+1ch*1]  ;SAD=AES
+   str  r5, [r3,08h+1ch*1]  ;DAD=dst
+   str  r2, [r3,0ch+1ch*1]  ;TCNT
+   str  r1, [r3,10h+1ch*1]  ;WCNT
+   mov  r0,0  ;?
+   str  r0, [r3,14h+1ch*1]  ;BCNT
+   ldr  r0,=8b034000h    ;AES-OUT
+   str  r0, [r3,1ch+1ch*1]  ;CNT
+  ;- - -
+   add  r5,r5,r7,lsl 4  ;addr+blks*10h
+ .endif
+ ;- - - -
+ mov  r0,(1 shl 24)+(0 shl 26)  ;\select key0
+ str  r0,[r4,00h] ;AES_CNT      ;/
+ mov  r0,2 shl 28 ;mode=AES-CTR ;\
+ str  r0,[r4,00h] ;AES_CNT      ; set mode, and start
+ .if mod_dma                    ;
+   orr r0,(3 shl 12)+(0 shl 14) ;
+ .endif                         ;
+ orr  r0,1 shl 31  ;start       ;
+ str  r0,[r4,00h] ;AES_CNT      ;/
+;- - -
+ .if mod_dma
+   ldr  r3,=4004100h   ;NDMA
+  @@lop:
+   ldr  r0, [r3,1ch+1ch*1]  ;CNT
+   tst  r0,80000000h
+   bne  @@lop
+ .else
+  ;mov  r7,r7  ;len (blocks)      ;\
+  @@lop:                          ;
+   mov  r0,r5 ;data.ram.start ;src;
+   bl   aes_send_16byte_data_litt ; decrypt
+   mov  r1,r5 ;data.ram.start ;dst;
+   bl   aes_recv_16byte_data_litt ;
+   add  r5,10h ;data.ram.start    ;
+   subs r7,1   ;len (blocks)      ;
+   bne  @@lop                     ;/
+ .endif
+
+         add  r8,@@blksiz ;0ff00h ;1000h ;index
+         cmp  r6,0h  ;len (remain blks)
+         bne  @@outer_lop
+
+@@modcrypt_not_here:
+ pop  r0-r12,pc
+;--- --- ---
+@@init_modcrypt_aes_key:  ;in: r4=hdr
+ push r0-r12,lr
+ ;The AES key depends of flags in the cartridge header:
+ ; IF header[01Ch].Bit2 OR header[1BFh].Bit7 THEN (probably for prototypes)
+ ;  Debug KEY[0..F]: First 16 bytes of the header                    [000h..00Fh]
+ ; ELSE (commonly used for retail software)
+ ;  Retail KEY_X[0..7]: Fixed 8-byte ASCII string                    ("Nintendo")
+ ;  Retail KEY_X[8..B]: The 4-byte gamecode, forwards                [00Ch..00Fh]
+ ;  Retail KEY_X[C..F]: The 4-byte gamecode, backwards               [00Fh..00Ch]
+ ;  Retail KEY_Y[0..F]: First 16 bytes of the ARM9i SHA1-HMAC        [350h..35Fh]
+ ldr  r1,=4004440h ;AES_KEY0    ;-dest (for KEY0 and following KEY0.X/Y)
+ add  r0,r4,0      ;hdr[000h..] ;\
+ mov  r2,10h                    ; KEY0 (debug key, usually replaced by key X/Y)
+ bl   memcopy_bytewise          ;/
+ ldrb r0,[r4,01ch] ;hdr[01Ch]   ;\
+ tst  r0,04h                    ;
+ bne  @@skip_key_xy             ; for debug, skip key X/Y (and keep above key)
+ ldrb r0,[r4,1bfh] ;hdr[1BFh]   ;
+ tst  r0,80h                    ;
+ bne  @@skip_key_xy             ;/
+ ldr  r0,=aes_key_Nintendo      ;\
+;ldr  r1,=4004450h ;AES_KEY0_X  ;
+ mov  r2,8                      ;
+ bl   memcopy_bytewise          ; KEY0.X
+ ldr  r0,[r4,00ch] ;hdr[00Ch]   ;
+ str  r0,[r1],4                 ;
+ bl   bswap_r0     ;backwards   ;
+ str  r0,[r1],4                 ;/
+ add  r0,r4,350h   ;hdr[350h..] ;\
+;ldr  r1,=4004460h ;AES_KEY0_Y  ; KEY0.Y
+ mov  r2,10h                    ;
+ bl   memcopy_bytewise          ;/
+@@skip_key_xy:
+ pop  r0-r12,pc
+;---
+aes_key_Nintendo db 'Nintendo'
+;------------------
+.if (aes_dma=0) AND (mod_dma=0)
+aes_send_16byte_data_litt:   ;in: r0, r4
+ push r0-r3,lr
+@@wait:
+ ldr  r3,[r4,00h] ;AES_CNT
+ and  r3,1fh shl 0 ;\txfifo (num words)
+ cmp  r3,0ch shl 0 ;/
+ bgt  @@wait
+ ldr  r1,[r0,00h]
+ str  r1,[r4,8]   ;WRFIFO
+ ldr  r1,[r0,04h]
+ str  r1,[r4,8]   ;WRFIFO
+ ldr  r1,[r0,08h]
+ str  r1,[r4,8h]  ;WRFIFO
+ ldr  r1,[r0,0ch]
+ str  r1,[r4,8]   ;WRFIFO
+ pop  r0-r3,pc
+.endif
+;------------------
+.if (aes_dma=0) AND (mod_dma=0)
+aes_recv_16byte_data_litt:   ;in: r1, r4
+ push r0-r3,lr
+@@wait:
+ ldr  r3,[r4,00h] ;AES_CNT
+ and  r3,1fh shl 5 ;\rxfifo (num words)
+ cmp  r3,04h shl 5 ;/
+ blt  @@wait
+ ldr  r3,[r4,0ch]  ;RDFIFO
+ str  r3,[r1,00h]
+ ldr  r3,[r4,0ch]  ;RDFIFO
+ str  r3,[r1,04h]
+ ldr  r3,[r4,0ch]  ;RDFIFO
+ str  r3,[r1,08h]
+ ldr  r3,[r4,0ch]  ;RDFIFO
+ str  r3,[r1,0ch]
+ pop  r0-r3,pc
+.endif
+;------------------
+.if vram_code=0
+arm9_zerofill_and_disable_all_vram:
+ .errif vram_code   ;don't selfdestroy!
+ push lr
+ mov  r0,80h // bl @@map_vram_r0                             ;-map vram 6800000h
+ mov  r0,5000000h // mov r1,800h    // bl zerofill_bytewise  ;-palette
+ mov  r0,6800000h // mov r1,0a4000h // bl zerofill_bytewise  ;-vram    6ms
+ mov  r0,7000000h // mov r1,800h    // bl zerofill_bytewise  ;-oam
+ mov  r0,00h // bl @@map_vram_r0                             ;-disable vram
+ pop  pc
+;---
+@@map_vram_r0:
+ mov  r1,4000000h
+ strb r0,[r1,240h] ;VRAMCNT_A
+ strb r0,[r1,241h] ;VRAMCNT_B
+ strb r0,[r1,242h] ;VRAMCNT_C
+ strb r0,[r1,243h] ;VRAMCNT_D
+ strb r0,[r1,244h] ;VRAMCNT_E
+ strb r0,[r1,245h] ;VRAMCNT_F
+ strb r0,[r1,246h] ;VRAMCNT_G
+ strb r0,[r1,248h] ;VRAMCNT_H
+ strb r0,[r1,249h] ;VRAMCNT_I
+ bx   lr
+.endif
+;------------------

@@ -23,10 +23,21 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ******************************************************************************/
 
+// BUGGED: original code doesn't disable IRQs in any ARP functions, so that ARP
+// functions called by user code could collide with ARP functions called from
+// IRQ handlers. That can cause several problems: Twice allocating the SAME
+// "unused" ARP record by different functions, or trying to process incompletely
+// initialized/modified ARP records.
+//  sgIP_ARP_SendGratARP         ;\were called with IRQs enabled
+//  sgIP_ARP_FlushInterface      ;/
+//  sgIP_ARP_ProcessARPFrame     ;\were usually/always called with IRQs disabled
+//  sgIP_ARP_SendProtocolFrame   ;/
+// just to be sure, it's best to disable IRQs in all of the above four functions
+//------------------
+
 #include "sgIP_ARP.h"
 
 sgIP_ARP_Record ArpRecords[SGIP_ARP_MAXENTRIES];
-
 
 int sgIP_FindArpSlot(sgIP_Hub_HWInterface * hw, unsigned long destip) {
 	int i;
@@ -37,7 +48,49 @@ int sgIP_FindArpSlot(sgIP_Hub_HWInterface * hw, unsigned long destip) {
 	}
 	return -1;
 }
-int sgIP_GetArpSlot() {
+
+void want_irq_off() {
+// TODO
+/* 
+                push r0-r3,lr
+                mov r0,cpsr
+                and r0,80h
+                eor r0,80h
+                mov r0,r0,lsr 7
+                mov  r1,4000000h
+                ldr  r1,[r1,REG_IME]
+                ands r0,r1
+                beq @@ookk
+                mov  r0,lr
+                bl   wrhex32bit
+                mov r0,':' // bl wrchr_r0
+                mov r0,':' // bl wrchr_r0
+                mov r0,':' // bl wrchr_r0
+                mov r0,':' // bl wrchr_r0
+                mov r0,':' // bl wrchr_r0
+                mov r0,':' // bl wrchr_r0
+                bl  wrcrlf
+                b $
+                @@ookk:
+                pop  r0-r3,pc
+*/
+}
+
+// BUGGED: original code didn't always clean up these things properly
+// (sometimes only clearing the flags, without deallocating the queued_packet,
+// or deallocating it's memblk, but without marking it as queued_packet=0)
+// - - -
+void sgIP_ARP_DiscardArpSlot(sgIP_ARP_Record* ArpRecord) {
+	if(ArpRecord->queued_packet) sgIP_memblock_free(ArpRecord->queued_packet);
+	ArpRecord->flags=0;
+	ArpRecord->retrycount=0;
+	ArpRecord->idletime=0;
+	ArpRecord->queued_packet=0;
+}
+
+// differences to original library:
+//* renamed to "sgIP_ARP_GetUnusedArpSlot" (instead of "sgIP_GetArpSlot")
+int sgIP_ARP_GetUnusedArpSlot() {
 	int i,m,midle;
 	m=0;
 	midle=0;
@@ -51,11 +104,7 @@ int sgIP_GetArpSlot() {
 		}
 	}
 	// this slot *was* in use, so let's fix that situation.
-	if(ArpRecords[m].queued_packet) sgIP_memblock_free(ArpRecords[m].queued_packet);
-	ArpRecords[m].flags=0;
-	ArpRecords[m].retrycount=0;
-	ArpRecords[m].idletime=0;
-	ArpRecords[m].queued_packet=0;
+    sgIP_ARP_DiscardArpSlot(ArpRecords+m);
 	return m;
 }
 
@@ -69,7 +118,7 @@ int sgIP_ARP_Check_isok(sgIP_Hub_HWInterface * hw, sgIP_memblock * mb, sgIP_Head
 	return 1; // doesn't do anything yet ;)
 }
 
-void	sgIP_ARP_Init() {
+void sgIP_ARP_Init() {
 	int i;
 	for(i=0;i<SGIP_ARP_MAXENTRIES;i++) {
 		ArpRecords[i].flags=0;
@@ -77,6 +126,7 @@ void	sgIP_ARP_Init() {
 		ArpRecords[i].queued_packet=0;
 	}
 }
+
 void sgIP_ARP_Timer100ms() {
 	int i;
 	for(i=0;i<SGIP_ARP_MAXENTRIES;i++) {
@@ -85,10 +135,7 @@ void sgIP_ARP_Timer100ms() {
 			if(!(ArpRecords[i].flags&SGIP_ARP_FLAG_HAVEHWADDR)) {
 				ArpRecords[i].retrycount++;
 				if(ArpRecords[i].retrycount>125) { // it's a lost cause.
-					if(ArpRecords[i].queued_packet) { // if there is already a queued packet, kill it.
-						sgIP_memblock_free(ArpRecords[i].queued_packet);
-					}
-					ArpRecords[i].flags=0;
+					sgIP_ARP_DiscardArpSlot(ArpRecords+i);
 					continue;
 				}
 				if((ArpRecords[i].retrycount&7)==7) { // attempt retransmit of ARP frame.

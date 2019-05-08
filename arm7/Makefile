@@ -40,9 +40,9 @@ LDFLAGS	=	-specs=ds_arm7.specs -g $(ARCH) -Wl,-Map,$(notdir $*).map
 
 
 ifneq ($(BUILD),debug)
-export ARM7BIN	:=	$(TOPDIR)/lib/libdswifi7.a
+export ARM7BIN	:=	$(TOPDIR)/lib/libnodsiwifi7.a
 else
-export ARM7BIN	:=	$(TOPDIR)/lib/libdswifi7d.a
+export ARM7BIN	:=	$(TOPDIR)/lib/libnodsiwifi7d.a
 CFLAGS	+=	-DSGIP_DEBUG
 endif
 

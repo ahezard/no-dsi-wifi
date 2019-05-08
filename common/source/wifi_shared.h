@@ -78,7 +78,7 @@ extern u32 SLasm_Release(volatile u32 * lockaddr, u32 lockvalue);
 
 #define WIFI_MAX_PROBE		4
 
-#define WIFI_AP_TIMEOUT    40
+#define WIFI_AP_TIMEOUT     3 // old=40 (old=40 was for N channels, new=3 from 2018 is for ALL channels N times, ie. expire after scanning 3x14 channels)
 
 #define WFLAG_PACKET_DATA		0x0001
 #define WFLAG_PACKET_MGT		0x0002
@@ -118,6 +118,27 @@ extern u32 SLasm_Release(volatile u32 * lockaddr, u32 lockvalue);
 #define WFLAG_APDATA_EXTCOMPATIBLE	0x0010
 #define WFLAG_APDATA_SHORTPREAMBLE	0x0020
 #define WFLAG_APDATA_ACTIVE			0x8000
+
+
+#define RSNIE_NULL                  0x0000
+#define RSNIE_GRP_WEP40             0x0001
+#define RSNIE_GRP_WEP104            0x0002
+#define RSNIE_GRP_TKIP              0x0004
+#define RSNIE_GRP_AES               0x0008
+#define RSNIE_PAIR_WEPNONE          0x0010
+#define RSNIE_PAIR_TKIP             0x0020
+#define RSNIE_PAIR_AES              0x0040
+
+#define EAPOL_TYPE_NONE             0
+#define EAPOL_TYPE_WPA              1
+#define EAPOL_TYPE_WPA2             2
+#define EAPOL_TYPE_ERROR            3
+
+#define KEY_TYPE_ERROR              0   //-oops, no matching key
+#define KEY_TYPE_NONE               1   //\
+#define KEY_TYPE_WEP                2   // these are SAME values as for dsi/atheros
+#define KEY_TYPE_TKIP               3   // (for use in CONNECT and ADD_CIPHER commands)
+#define KEY_TYPE_AES                4   ///
 
 
 enum WIFI_RETURN {
@@ -219,6 +240,58 @@ typedef struct WIFI_ACCESSPOINT {
 	u8 base_rates[16]; // terminated by a 0 entry
 } Wifi_AccessPoint;
 
+//------------------
+typedef struct SG_BEACON {  //info from beacon's header
+// (new structure invented for "with_dsi_wifi", for passing some info)
+ u8 sgBeacon_sa;         // equ 00h  ;6
+ u8 sgBeacon_bssid;      // equ 06h  ;6
+ u8 sgBeacon_strength;   // equ 0Ch  ;1
+ u8 sgBeacon_reserved;   // equ 0Dh  ;3
+} sgBeacon;
+//------------------
+
+
+//------------------
+typedef struct SG_WIFI_WFC {
+ // this structure combines the "sgWifiAp" structure (in first some bytes),
+ // plus extra WFC data (WEP key and other stuff from wifi flash memory)
+ // - - -
+ // this structure doesn't exist in that form in original code (instead it used
+ // several separate arrays (wfc_ap[3], wfc_enable[4], wfc_config[3][5], and
+ // wfc_wepkey[3][16]) instead of a single structure
+ // BUGGED: the comment for the "wfc_config[3][5]" array claims snmask to be 2nd
+ // entry, and gateway to be 3rd entry (but actual code uses it vice-versa)
+ //- - -
+ u8  ap;       // equ 00h  ;sgWifiAp_xx ;..  ;-public WifiAp data (as for beacons)
+ u8  wepkey[0x10];   // equ 00h+sgWifiAp_size ;10h ;\
+ u32 ip;       // equ 10h+sgWifiAp_size ;4   ;
+ u32 gateway;  // equ 14h+sgWifiAp_size ;4   ; secret data (WEP key,
+ u32 first_dns;  // equ 18h+sgWifiAp_size ;4   ; and user-specified Non-DHCP
+ u32 second_dns;  // equ 1ch+sgWifiAp_size ;4   ; settings)
+ u32 subnet;   // equ 20h+sgWifiAp_size ;4   ;
+ u8 enable;   // equ 24h+sgWifiAp_size ;1   ;
+ u8 wepmode;  // equ 25h+sgWifiAp_size ;1   ;
+#ifdef with_dsi_wifi                             
+ u8 wpamode; // equ 26h+sgWifiAp_size ;1   ;
+ u8 eapol;   // equ 27h+sgWifiAp_size ;1   ; ;-eapol type (none/wpa/wpa2/none/error) ;\these are not FLASH settings,
+ u8 grp;     // equ 28h+sgWifiAp_size ;1   ; ;-group key type    (none/wep/tkip/aes) ;/(but, MATCHED to supported FLASH/CONSOLE capabilities)
+ u8 pair;    // equ 29h+sgWifiAp_size ;1   ; ;-pairwise key type (none/wep/tkip/aes) ; but rather detected ACCESS POINT capabilities from BEACON
+ u16 padding; // equ 2Ah+sgWifiAp_size ;2   ;
+ u8 psk[0x20];     // equ 2Ch+sgWifiAp_size ;20h ;
+#else                                         
+ u16 padding; // equ 26h+sgWifiAp_size ;2   ;
+#endif
+} sgWifiWfc;
+//-----------------
+
+//------------------
+#ifdef with_dsi_wifi
+#define  NUM_WFC_ENTRIES 6   // with three new entries for 4/5/6 with wpa/wpa2
+#else
+#define  NUM_WFC_ENTRIES 3   // this was hardcoded in original code (ie. using "3" instead of the "NUM_WFC_ENTRIES" symbol)
+#endif
+//------------------
+
 typedef struct WIFI_MAINSTRUCT {
 	unsigned long dummy1[8];
 	// wifi status
@@ -244,6 +317,36 @@ typedef struct WIFI_MAINSTRUCT {
 	u8 baserates7[16], baserates9[16];
 	u8 apchannel7, apchannel9;
 	u8 maxrate7;
+#ifdef with_dsi_wifi
+	// char wpamode7;       db 0    ; ..h ;1    
+	// char wpamode9;       db 0    ; ..h ;1    
+	u8 eapol7;      // db 0
+	u8 eapol9;      // db 0
+	u8 grp7;        // db 0
+	u8 grp9;        // db 0
+	u8 pair7;       // db 0
+	u8 pair9;       // db 0
+	u8 gtk_index7;  // db 0
+	u8 4way_handshake_busy;  // db 0
+	u8 expected_handshake;   // db 0
+	u8 handshake_crypt; // db 0   ;1=WPA-TKIP or WPA2-TKIP, 2=WPA-AES or WPA2-AES or WPA2-AES+TKIP
+//.align 4
+	u32 rsnie7_wpa;     // dd 0
+	u32 rsnie9_wpa;     // dd 0
+	u32 rsnie7_wpa2;    // dd 0
+	u32 rsnie9_wpa2;    // dd 0
+	u8 psk7[32];        // defs 32 ; ..h ;14h  u8   psk7[32]
+	u8 psk9[32];        // defs 32 ; ..h ;14h  u8   psk9[32]
+	u8 anonce7[32];     // defs 32
+	u8 snonce7[32];     // defs 32
+	u8 ptk7[64];        // defs  64
+	u8 gtk7[32];        // defs 32
+	u8 rsc7[8];         // defs 8
+	u8 replay7[8];      // defs 8
+	u32 reg_domain;     // dd 0
+	u32 reg_channels;   // dd 0
+    
+#endif    
 	u16 ap_rssi;
 	u16 pspoll_period;
 
@@ -274,13 +377,36 @@ typedef struct WIFI_MAINSTRUCT {
    
 	u16 debug[30];
 
-   u32 random; // semirandom number updated at the convenience of the arm7. use for initial seeds & such.
+    u32 random; // semirandom number updated at the convenience of the arm7. use for initial seeds & such.
 
 	unsigned long dummy2[8];
 
 } Wifi_MainStruct;
 
-
-
+typedef struct XTRA_UNCACHED_MEM { // Xtra_uncached_mem_start:
+	u32 arm9_call_addr;      // dd 0
+	u16 nds_wifi_chip_id;    // dw 0 ;\
+	u16 nds_wifi_bb_rf_type; // dw 0 ;/
+	u32 sdio_chip_id;        // dd 0
+#ifdef with_blowfish
+	// keyinfo;
+    u32 keyname;  // dd 0  ;gamecode/idcode
+    u32 keymode;  // dd 0  ;00h=none, 08h=gamecart, 0Ch=firmware (upper bits always zero)
+    u32 keylevel; // dd 0  ;apply_level (1..3 = once,twice,thrice)
+    u32 keydsi;   // dd 0  ;nds/dsi key
+    u8 keycode[0x0c]; // defs 0ch
+    u8 keybuf[0x1048];  // defs 1048h
+	u8 nds_blowfish_key[0x1048]; // defs 1048h
+#endif
+// .align 100h  ;XXXX maybe needed to ensure no cache-line boundary?
+	u32 vblank_count;       //  dd 0
+	u32 random_count;       //  dd 0
+	u8  rtc_datetime[8];    //  defs 8
+	u32 recent_heartbeat;   //  dd 0
+	u32 curr_wpa_tx_callback_list_ptr; // dd 0
+	u8 dsi_wifi_flag;      //  db 0
+// .align 4
+} Xtra_uncached_mem; // Xtra_uncached_mem_end:
+        
 #endif
 

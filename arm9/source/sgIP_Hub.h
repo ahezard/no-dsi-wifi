@@ -42,9 +42,22 @@ SOFTWARE.
 #ifdef SGIP_LITTLEENDIAN
 #define PROTOCOL_ETHER_ARP                   0x0608
 #define PROTOCOL_ETHER_IP                    0x0008
+#ifdef with_dsi_wifi
+#define PROTOCOL_ETHER_EAPOL                 0x8e88  //=htons(888Eh)
+#endif
+#define HWSPACE_ETHERNET                     0x0100  //=htons(0001h)
+#define ARP_OPCODE_REQUEST                   0x0100  //=htons(0001h)
+#define ARP_OPCODE_RESPONSE                  0x0200  //=htons(0002h)
+#define DNS_PORT                             0x3500  //=htons(53)
 #else
 #define PROTOCOL_ETHER_ARP                   0x0806
 #define PROTOCOL_ETHER_IP                    0x0800
+#ifdef with_dsi_wifi
+#define PROTOCOL_ETHER_EAPOL                 0x888e
+#endif
+#define HWSPACE_ETHERNET                     0x0001
+#define ARP_OPCODE_REQUEST                   0x0001
+#define ARP_OPCODE_RESPONSE                  0x0002
 #endif
 
 

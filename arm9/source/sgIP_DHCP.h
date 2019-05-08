@@ -31,7 +31,8 @@ SOFTWARE.
 // "DHCP Server" port is 67, "DHCP Client" port is 68
 // DHCP messages broadcast by a client prior to that client obtaining its IP address must have the source address field in the IP header set to 0.
 
-
+#define DHCP_BOOTP_SERVER 0x4300 // aka htons(67)  ;"DHCP Server" port
+#define DHCP_BOOTP_CLIENT 0x4400 // aka htons(68)  ;"DHCP Client" port
 
 typedef struct SGIP_DHCP_PACKET { // yes, freaking big endian prevails here too.
    unsigned char op;       // opcode/message type (1=BOOTREQUEST, 2=BOOTREPLY)

@@ -138,24 +138,36 @@ SOFTWARE.
 //  (such as IP)
 #define SGIP_HUB_MAXPROTOCOLINTERFACES			1
 
-#define SGIP_TCP_FIRSTOUTGOINGPORT				40000
-#define SGIP_TCP_LASTOUTGOINGPORT				65000
-#define SGIP_UDP_FIRSTOUTGOINGPORT				40000
-#define SGIP_UDP_LASTOUTGOINGPORT				65000
+// BUGGED: original code uses 40000-65000, but official numbering seems to be:
+//  0-1023       = System Ports (assigned by IANA)
+//  1024-49151   = User Ports (assigned by IANA)
+//  49152-65535  = Dynamic Ports (free)
+// so one should probably better use 49152-65535 instead of 40000-65000 here.
+// - - -
+
+#define SGIP_TCP_FIRSTOUTGOINGPORT				49152 // original: 40000
+#define SGIP_TCP_LASTOUTGOINGPORT				65535 // original: 65000  ;<-- up to INCLUDING this last value (?) (!!)
+#define SGIP_UDP_FIRSTOUTGOINGPORT				49152 // original: 40000
+#define SGIP_UDP_LASTOUTGOINGPORT				65535 // original: 65000  ;<-- up to INCLUDING this last value (?) (!!)
+
+#define SGIP_TCP_NUMPORTS SGIP_TCP_LASTOUTGOINGPORT+1-SGIP_TCP_FIRSTOUTGOINGPORT
+#define SGIP_UDP_NUMPORTS SGIP_UDP_LASTOUTGOINGPORT+1-SGIP_UDP_FIRSTOUTGOINGPORT
 
 #define SGIP_TCP_GENTIMEOUTMS                6000
 #define SGIP_TCP_TRANSMIT_DELAY              25
 #define SGIP_TCP_TRANSMIT_IMMTHRESH          40
-#define SGIP_TCP_TIMEMS_2MSL                 1000*60*2
+#define SGIP_TCP_TIMEMS_2MSL                 1000*128
+// uh, what is a "MSL"? seems to mean "minutes"! (the value is counted in milliseconds (via "sgIP_timems"), so 1000*60*2 would mean 120 seconds aka "2 minutes") (in ASM code: use 128 seconds instead)
+
 #define SGIP_TCP_MAXRETRY                    7
 #define SGIP_TCP_MAXSYNS                     64
 #define SGIP_TCP_REACK_THRESH                   1000
 
 #define SGIP_TCP_SYNRETRYMS						250
 #define SGIP_TCP_GENRETRYMS						500
-#define SGIP_TCP_BACKOFFMAX						6000
+#define SGIP_TCP_BACKOFFMAX						1024*6      // original: 6000
 
-#define SGIP_SOCKET_MAXSOCKETS					32
+#define SGIP_SOCKET_MAXSOCKETS					32   // uh, caution: this must be same (or less) than "FD_SETSIZE"
 
 //#define SGIP_SOCKET_DEFAULT_NONBLOCK			1
 
@@ -166,14 +178,16 @@ SOFTWARE.
 #define SGIP_DNS_MAXRECORDSCACHE             16
 #define SGIP_DNS_MAXRECORDADDRS              4
 #define SGIP_DNS_MAXALIASES                  4
-#define SGIP_DNS_TIMEOUTMS                   5000
+#define SGIP_DNS_TIMEOUTMS                   1024*5      // original: 5000
 #define SGIP_DNS_MAXRETRY                    3
 #define SGIP_DNS_MAXSERVERRETRY              4
 
 //////////////////////////////////////////////////////////////////////////
 
-#define SGIP_DHCP_ERRORTIMEOUT               45000
-#define SGIP_DHCP_RESENDTIMEOUT				 3000
+#define SGIP_DHCP_ERRORTIMEOUT               1024*45     // original: 45000
+#define SGIP_DHCP_RESENDTIMEOUT				 1024*3  //*1   ;;512 ;;;XNAY 1024*3      ;original: 3000 
+// (uh, that would 3 seconds before retry, looks a bit too long)   
+// ;XXX small value like "100" can overload fritzbox (causing to refuse wifi at all, even when resuming to use larger timeout values?!)
 #define SGIP_DHCP_DEFAULTHOSTNAME            "NintendoDS"
 #define SGIP_DHCP_CLASSNAME                  "sgIP 0.3"
 

@@ -23,6 +23,18 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ******************************************************************************/
 
+//note: original code uses "socket" values in range "N=1..SGIP_SOCKET_MAXSOCKETS"
+//as parameters/return values for socket functions, the a22i code does instead
+//use pointers to the corresponding socket entry, ie. "socketlist[N-1]".
+//------------------
+//BUGGED: original code does "return -1" (without "errno") in several "socket.c"
+//functions; in some cases. And, the SAME functions do "return SGIP_ERROR(xx)"
+//(with "errno") in other cases. The uninitialized "errno" cases could result in
+//very weird effects (when user code is actually handling the "errno" values).
+//- - -
+//also odd: some socket functions return EBADF (instead EINVAL) is that wanted?
+//------------------
+
 #include "sgIP_sockets.h"
 #include "sgIP_TCP.h"
 #include "sgIP_UDP.h"
@@ -272,6 +284,11 @@ int sendto(int socket, const void * data, int sendlength, int flags, const struc
 	SGIP_INTR_UNPROTECT();
 	return retval;
 }
+
+//uh, incoming [ptr_to_addr_len] SHOULD be probably AT LEAST "sgSoin_size"
+//(original code is just simply IGNORING the incoming value though; and the
+//functions that DO USE "recvfrom" are passing UNINITIALIZED incoming values)
+//- - -
 int recvfrom(int socket, void * data, int recvlength, int flags, struct sockaddr * addr, int * addr_len) {
 	if(socket<1 || socket>SGIP_SOCKET_MAXSOCKETS) return -1;
 	if(!addr) return -1;

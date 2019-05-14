@@ -95,7 +95,8 @@ int sgIP_IP_RequiredHeaderSize() {
 int sgIP_IP_SendViaIP(sgIP_memblock * mb, int protocol, unsigned long srcip, unsigned long destip) {
 	sgIP_Header_IP * iphdr;
 	unsigned short * chksum_calc;
-	int chksum_temp,i;
+	int i;
+    unsigned int chksum_temp;
 	sgIP_memblock_exposeheader(mb,20);
 	iphdr=(sgIP_Header_IP *)mb->datastart;
 	chksum_calc=(unsigned short *)mb->datastart;
@@ -109,13 +110,25 @@ int sgIP_IP_SendViaIP(sgIP_memblock * mb, int protocol, unsigned long srcip, uns
 	iphdr->TTL=SGIP_IP_TTL;
 	iphdr->type_of_service=0;
 	iphdr->version_ihl=0x45;
-	chksum_temp=0;
+    
+    //BUGGED: probably should add CY on CY (as done in other checksum funcs?)
+    //  and 'unclean' in original code: variable is named "chksum_temp" here
+    //  (whilst most other/similar functions have it named "checksum")
+    //  and a general issue for all those checksum functions:
+    //  the checksum is defined as (signed?) "int", so the right-shifting
+    //  would sign-extended "negative" checksums? (though the sign in bit31
+    //  will be probably usually zero, unless for very large packets)	
+    chksum_temp=0;
 	for(i=0;i<10;i++) chksum_temp+=chksum_calc[i];
 	chksum_temp += chksum_temp>>16;
 	chksum_temp &= 0xFFFF;
 	chksum_temp = ~chksum_temp;
+    
+    // uh, so? (condition in original C code was BUGGED: set MSW=0, then MSW=(not 0), then checking if value=0... which cannot ever happen due to MSW=FFFFh)
 	if(chksum_temp==0) chksum_temp=0xFFFF;
+    
 	iphdr->header_checksum=chksum_temp;
+    
 	return sgIP_Hub_SendProtocolPacket(htons(0x0800),mb,destip,srcip);
 }
 unsigned long sgIP_IP_GetLocalBindAddr(unsigned long srcip, unsigned long destip) {

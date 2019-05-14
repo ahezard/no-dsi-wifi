@@ -117,7 +117,10 @@ sgIP_memblock * sgIP_memblock_allocHW(int headersize, int packetsize) {
 			}
 			tmb->next=t;
 			t->totallength=mb->totallength;
-			t->datastart=mb->reserved; // no header on blocks after the first.
+            
+            //BUGGED: original code points "CURR memblk's datastart to FIRST memblk"
+            //FIX:    below bugfix points "CURR memblk's datastart to CURR memblk"
+			t->datastart=t->reserved; // no header on blocks after the first.
 			t->next=0;
 			t->thislength=SGIP_MEMBLOCK_INTERNALSIZE;
 			if(t->thislength+totlen>=mb->totallength) {
@@ -198,6 +201,9 @@ void sgIP_memblock_trimsize(sgIP_memblock * mb, int newsize) {
 	int lentot;
 	if(mb) {
 		mb->totallength=newsize;
+        
+        //BUGGED: should "sgMemBlk_totallength" be also adjusted in below @@lop entries?
+        // (ie. similar as done in the "sgIP_memblock_exposeheader" function?)
 		lentot=0;
 		while(mb) {
 			lentot+=mb->thislength;
@@ -234,6 +240,14 @@ int sgIP_memblock_IPChecksum(sgIP_memblock * mb, int startbyte, int chksum_lengt
 			chksum_length--;
 			offset=0;
 			startbyte=0;
+            
+            //BUGGED: original code DOES ONLY CONTINUE at next memblk (via "mb=mb->next")
+            //in ODD cases (when a halfword wraps last/first bytes of two memblk's),
+            //whilst NORMAL cases (without wrap) do simply ABORT checksumming, outc
+            //- - -
+            //below check MSW+LSW merging is done INSIDE of @@check_lop to avoid overflows,
+            //(which could otherwise happen when checksumming more than 128Kbytes at once)
+            // TODO : fix the bug
 			mb=mb->next;
 			if(!mb) break;
 			if(mb->thislength==0) break;
@@ -247,6 +261,7 @@ int sgIP_memblock_IPChecksum(sgIP_memblock * mb, int startbyte, int chksum_lengt
    chksum_temp= (chksum_temp&0xFFFF) +(chksum_temp>>16);
 	return chksum_temp;
 }
+
 int sgIP_memblock_CopyToLinear(sgIP_memblock * mb, void * dest_buf, int startbyte, int copy_length) {
 	int copylen,ofs_src, tot_copy;
 	ofs_src=startbyte;

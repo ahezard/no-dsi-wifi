@@ -35,7 +35,7 @@ SOFTWARE.
 // keepalive set for 2 minutes.
 #define WIFI_KEEPALIVE_COUNT		60*128 // orig (60*60*2) keepalive set for about 2 minutes
 
-#ifdef with_nds_wifi
+//#ifdef with_nds_wifi
 #define WIFI_REG(ofs) (*((volatile u16 *)(0x04800000+(ofs))))
 // Wifi regs
 #define W_WEPKEY0		(((volatile u16 *)(0x04805F80)))
@@ -57,29 +57,30 @@ SOFTWARE.
 #define WIFIRAM_TOTAL_SIZE      equ 2000h ;-end of 8Kbyte Wifi RAM
 #define WIFIRAM_BASE32          equ 4804000h  ;\base address for Wifi RAM (as 32bit
 #define WIFIRAM_BASE16          equ 4000h     ;/ARM address, and 16bit Wifi address)
-#endif //with_nds_wifi
+//#endif //with_nds_wifi
 //------------------
 //------------------
 // BUGGED: below uses wrong waitstate area (4800xxxh instead 4808xxxh)
 // and, below is totally INCOMPLETE, and doesn't comply with gbatek names
-//#define W_MODE_RST		(*((volatile u16 *)(0x04800004)))
-//#define W_MODE_WEP		(*((volatile u16 *)(0x04800006)))
-//#define W_IF			(*((volatile u16 *)(0x04800010)))
-//#define W_IE			(*((volatile u16 *)(0x04800012)))
-//#define W_MACADDR		(((volatile u16 *)(0x04800018)))
-//#define W_BSSID			(((volatile u16 *)(0x04800020)))
-//#define W_AIDS			(*((volatile u16 *)(0x04800028)))
-//#define W_RETRLIMIT		(*((volatile u16 *)(0x0480002C)))
-//#define W_POWERSTATE	(*((volatile u16 *)(0x0480003C)))
-//#define W_RANDOM		(*((volatile u16 *)(0x04800044)))
+// TODO : comment definition below
+#define W_MODE_RST		(*((volatile u16 *)(0x04800004)))
+#define W_MODE_WEP		(*((volatile u16 *)(0x04800006)))
+#define W_IF			(*((volatile u16 *)(0x04800010)))
+#define W_IE			(*((volatile u16 *)(0x04800012)))
+#define W_MACADDR		(((volatile u16 *)(0x04800018)))
+#define W_BSSID			(((volatile u16 *)(0x04800020)))
+#define W_AIDS			(*((volatile u16 *)(0x04800028)))
+#define W_RETRLIMIT		(*((volatile u16 *)(0x0480002C)))
+#define W_POWERSTATE	(*((volatile u16 *)(0x0480003C)))
+#define W_RANDOM		(*((volatile u16 *)(0x04800044)))
 
-//#define W_BBSIOCNT		(*((volatile u16 *)(0x04800158)))
-//#define W_BBSIOWRITE	(*((volatile u16 *)(0x0480015A)))
-//#define W_BBSIOREAD		(*((volatile u16 *)(0x0480015C)))
-//#define W_BBSIOBUSY		(*((volatile u16 *)(0x0480015E)))
-//#define W_RFSIODATA2	(*((volatile u16 *)(0x0480017C)))
-//#define W_RFSIODATA1	(*((volatile u16 *)(0x0480017E)))
-//#define W_RFSIOBUSY		(*((volatile u16 *)(0x04800180)))
+#define W_BBSIOCNT		(*((volatile u16 *)(0x04800158)))
+#define W_BBSIOWRITE	(*((volatile u16 *)(0x0480015A)))
+#define W_BBSIOREAD		(*((volatile u16 *)(0x0480015C)))
+#define W_BBSIOBUSY		(*((volatile u16 *)(0x0480015E)))
+#define W_RFSIODATA2	(*((volatile u16 *)(0x0480017C)))
+#define W_RFSIODATA1	(*((volatile u16 *)(0x0480017E)))
+#define W_RFSIOBUSY		(*((volatile u16 *)(0x04800180)))
 
 
 

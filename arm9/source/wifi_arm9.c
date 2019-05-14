@@ -293,6 +293,19 @@ void Wifi_TxBufferWrite(s32 start, s32 len, u16 * data) {
 	}
 }
 
+// original code does round-up length to halfword boundary, thus writing
+// an extra byte to dest upon odd length (to avoid writing too much data to dest,
+// original code in "arm9_Wifi_Update" is transferring the last/odd byte manually
+// via some weird code construction, instead of via this function.
+// however, READING from WifiRAM should work even in byte-units, so the whole
+// rounding stuff & manual last-byte transfer stuff aren't really needed, and
+// one can instead just support odd lengths.
+// uh, this is ARM9 code (with everything in MainRAM or DTCM, not WifiRAM),
+// so odd bytes should be no issue at all.
+// another oddity is that original code returned the rounded-length div2 (which
+// doesn't work out when supporting odd lengths, but which isn't needed because
+// the return value wasn't used anywhere, so one can just omit the return value.
+//- - 
 int Wifi_RxRawReadPacket(s32 packetID, s32 readlength, u16 * data) {
 	int readlen,read_data;
 	readlength= (readlength+1)/2;
@@ -392,6 +405,8 @@ int Wifi_GetAPData(int apnum, Wifi_AccessPoint * apdata) {
 	
 	if(WifiData->aplist[apnum].flags&WFLAG_APDATA_ACTIVE) {
 	    while(Spinlock_Acquire(WifiData->aplist[apnum])!=SPINLOCK_OK);
+        // CHAOS: original code uses quite misleading indent (the lines after the "while"
+        // statement are NOT part of the single-line "while" statement)
 	    {
 		// additionally calculate average RSSI here
 		WifiData->aplist[apnum].rssi=0;
@@ -408,6 +423,135 @@ int Wifi_GetAPData(int apnum, Wifi_AccessPoint * apdata) {
 	return WIFI_RETURN_ERROR;
 }
 
+int determine_crypto (Wifi_AccessPoint * apdata, sgWifiWfc * wifiWfc) {
+   return 0;
+}
+// TODO : implements the function, should be used in Wifi_FindMatchingAP
+/*determine_crypto:          ;in: r0=sgWifiAp/beacon, r1=sgWifiWfc/flash
+ push r4-r9,lr
+ mov  r4,r0     ;sgWifiAp from RECEIVED BEACON
+ mov  r5,r1     ;sgWifiWfc from Wifi-FLASH
+ ldr  r6,[r4,sgWifiAp_rsnie_wpa2]       ;\                              ;\
+ mov  r7,EAPOL_TYPE_WPA2                ; try WPA2, preferred           ;
+ bl   @@try_this                        ;                               ;
+ bne  @@use_this_eapol                  ;/                              ; EAPOL
+ ldr  r6,[r4,sgWifiAp_rsnie_wpa]        ;\                              ;
+ mov  r7,EAPOL_TYPE_WPA                 ; try WPA, alternate            ;
+ bl   @@try_this                        ;                               ;
+ bne  @@use_this_eapol                  ;/                              ;
+ ldr  r0,[r4,sgWifiAp_rsnie_wpa]        ;\refuse if RSNIE(s) were       ;
+ ldr  r1,[r4,sgWifiAp_rsnie_wpa2]       ; nonzero,                      ;
+ orrs r0,r1                             ; but unsupported by console    ;
+ bne  @@refuse                          ;/                              ;/
+ mov  r7,EAPOL_TYPE_NONE                ;-else no EAPOL (for Open/WEP)  ;\
+ ldr   r0,[r4,sgWifiAp_flags]   ;\                                      ;
+ tst   r0,WFLAG_APDATA_WEP      ; open or wep                           ; OPEN
+ moveq r0,KEY_TYPE_NONE         ; (depending on capability flags)       ; or WEP
+ movne r0,KEY_TYPE_WEP          ;/                                      ;
+ .if insist_on_selected_cipher                                          ;
+   ldrb  r3,[r5,sgWifiWfc_wpamode] ;flash   ;\reject open/wep           ;
+   cmp   r3,0                               ; if wpa/wpa2 selected      ;
+   bne   @@refuse                           ;/                          ;
+   ldrb  r3,[r5,sgWifiWfc_wepmode] ;flash   ;\                          ;
+   cmp   r3,0                               ;                           ;
+   moveq r3,KEY_TYPE_NONE                   ; insist on open/wep        ;
+   movne r3,KEY_TYPE_WEP                    ; respectively              ;
+   cmp   r3,r0                              ;                           ;
+   bne   @@refuse                           ;/                          ;
+ .endif                                                                 ;
+;XXX .if insist_on_minimum_cipher --> reject AP=WEP with FLASH having empty WEP-password entry
+;XXX .if insist_on_minimum_cipher --> reject AP=open with FLASH=NotOpen
+;XXX .if insist_on_minimum_cipher --> reject AP=WEP with FLASH=WPA/WPA2
+ mov   r8,r0  ;group key                                                ;
+ mov   r9,r0  ;pairwise key                                             ;/
+ b     @@use_this_eapol
+;---
+@@refuse:
+ mov  r7,EAPOL_TYPE_ERROR
+ mov  r8,KEY_TYPE_ERROR
+ mov  r9,KEY_TYPE_ERROR
+@@use_this_eapol:
+;- - -
+@@finish:
+ strb  r7,[r5,sgWifiWfc_eapol]          ;-apply EAPOL type              ;\
+ strb  r8,[r5,sgWifiWfc_grp]            ;-apply GROUP key type          ; apply
+ strb  r9,[r5,sgWifiWfc_pair]           ;-apply PAIRWISE key type       ;/
+ cmp   r7,EAPOL_TYPE_ERROR   ;out: EQ=bad, NE=okay
+ pop   r4-r9,pc
+;--- --- ---
+@@try_this:    ;in: r6=RSNIE flags, r7=EAPOL type, r5 - out: zf,r0,r8,r9
+ mov  r0,r6  ;rsnie
+ .if with_nds_wifi AND with_dsi_wifi      ;\
+   ldr  r3,=dsi_wifi_flag                 ;
+   ldrb r3,[r3]                           ; for NDS-wifi:
+   cmp  r3,0                              ; mask-off AES (and TKIP, unless supporting that someday)
+   bne  @@dsi                             ;
+ .endif                                   ;
+ .if with_nds_wifi                        ;
+  @@nds:                                  ;
+   bic  r0,RSNIE_PAIR_AES+RSNIE_GRP_AES   ; <-- AES not supported by NDS hardware
+  ;XXX with_nds_wpa...                    ;
+   bic  r0,RSNIE_PAIR_TKIP+RSNIE_GRP_TKIP ; <-- TKIP not (yet) supported by NDS software
+  @@dsi:                                  ;
+ .endif                                   ;/
+ ;- - -
+ .if insist_on_selected_cipher                          ;\
+   ldrb  r3,[r5,sgWifiWfc_wpamode] ;flash               ; for insistive: mask-off anything not explicitely selected in wifi-flash
+   cmp   r3,4  ;WPA-TKIP                                ; ;\
+   cmpne r3,5  ;WPA2-TKIP                               ; ; insist on TKIP only
+   andeq r0,RSNIE_PAIR_TKIP+RSNIE_GRP_TKIP              ; ;/
+   cmp   r3,6  ;WPA-AES                                 ; ;\insist on AES only
+   cmpne r3,7  ;WPA2-AES                                ; ; (except, can allow
+   andeq r0,RSNIE_PAIR_AES+RSNIE_GRP_AES+RSNIE_GRP_TKIP ; ;/TKIP as GROUP key)
+   cmp   r3,4  ;WPA-TKIP                                ; ;\
+   cmpne r3,6  ;WPA-AES                                 ; ;
+   moveq r2,EAPOL_TYPE_WPA                              ; ; insist on WPA/WPA2
+   movne r2,EAPOL_TYPE_WPA2                             ; ; respectively
+   cmp   r2,r7                                          ; ;
+   movne r0,RSNIE_NULL                                  ; ;/
+ .endif                                                 ;/
+ ;- - -
+ ldrb  r3,[r5,sgWifiWfc_wpamode] ;flash   ;\
+ cmp   r3,0     ;WEP/OPEN (no WPA/WPA2)   ; for all wifi: mask-off AES+TKIP
+ biceq r0,RSNIE_PAIR_AES+RSNIE_GRP_AES    ; if password isn't in wifi-flash
+ biceq r0,RSNIE_PAIR_TKIP+RSNIE_GRP_TKIP  ;/
+;XXX .if insist_on_minimum_cipher: allow above also if FLASH=Open/WEP (but detect/insist on PSK being defined in FLASH) (ie. detect if PSK=zerofilled, instead of checking wpamode=zero)
+ ;- - -
+ tst   r0,RSNIE_GRP_AES+RSNIE_GRP_TKIP    ;\want a working GROUP key, AND also
+ tstne r0,RSNIE_PAIR_AES+RSNIE_PAIR_TKIP  ; want a working PAIRWISE key
+ moveq r0,RSNIE_NULL   ;oops, no pair     ;/
+ ;- - -
+ tst   r0,RSNIE_GRP_TKIP  ;\    ;\                                      ;\
+ movne r8,KEY_TYPE_TKIP   ;/    ; AES or TKIP                           ; GROUP
+ tst   r0,RSNIE_GRP_AES   ;\    ; (depending on RSNIE flags)            ; KEY
+ movne r8,KEY_TYPE_AES    ;/    ;/                                      ;/
+ tst   r0,RSNIE_PAIR_TKIP ;\    ;\                                      ;\PAIR-
+ movne r9,KEY_TYPE_TKIP   ;/    ; AES or TKIP                           ; WISE
+ tst   r0,RSNIE_PAIR_AES  ;\    ; (depending on RSNIE flags)            ; KEY
+ movne r9,KEY_TYPE_AES    ;/    ;/                                      ;/
+ cmp   r0,RSNIE_NULL  ;\out: EQ=not accepted, NE=okay
+ bx    lr             ;/
+;------------------*/
+
+
+//note: the list with incoming access point(s) can either,
+//  one         "WifiAp" structure   (eg. selected from received beacons), or
+//  one or more "WifiWfc" structures (from "WFC" in WifiFLASH)
+//the "WifiWfc" structure does internally contain a "WifiAp" structure, so
+//the search code works same for both structure types, the important difference
+//is that "WifiWfc" is bigger than "WifiAp", and the stepping for numaps>1 is
+//using the "WifiWfc_size" as offset to next list entry.
+//- - -
+//returned are TWO things:
+//  r0      points to the matching WifiWfc entry for incoming WFC list (-1=none)
+//  [dest]  contains a copy of the WifiAp data from received beacon list
+//the "WifiWfc" stuff does also contain "WifiAp" stuff, but that shouldn't be
+//used upon return (among others because it's incomplete: contains only the
+//SSID name, but not the BSSID address), INSTEAD, one should use the WifiAp
+//copy at [dest].
+//note: original code returned an INDEX in r0, the ASM port returns a PTR in r0
+//- - -
+// TODO : update the function to handle WifiWfc 
 int Wifi_FindMatchingAP(int numaps, Wifi_AccessPoint * apdata, Wifi_AccessPoint * match_dest) {
 	int ap_match,i,j,n;
 	Wifi_AccessPoint ap;
@@ -430,6 +574,8 @@ int Wifi_FindMatchingAP(int numaps, Wifi_AccessPoint * apdata, Wifi_AccessPoint 
 			if(apdata[j].channel!=0) { // compare channels
 				if(apdata[j].channel!=ap.channel) continue;
 			}
+            // TODO : check cryto
+            // determine_crypto()
 			if(j<ap_match || ap_match==-1) {
 				ap_match=j;
 				if(match_dest) *match_dest = ap;
@@ -440,9 +586,236 @@ int Wifi_FindMatchingAP(int numaps, Wifi_AccessPoint * apdata, Wifi_AccessPoint 
 	return ap_match;
 }
 
+void Wifi_ApplyBeaconInfoFromWifiAP();
+// TODO : implements the function, 
+// should be used in Wifi_ConnectAP and Wifi_AssocStatus 
+/*
+arm9_Wifi_ApplyBeaconInfoFromWifiAP:
+ push r4,lr
+ mov  r4,r0  ;WifiAp
+ add  r0,r4,sgWifiAp_bssid         ;src ;\
+ ldr  r1,=WifiData_bssid9          ;dst ; apply BSSID
+ bl   arm9_Wifi_CopyMacAddr             ;/
+ add  r0,r4,sgWifiAp_bssid         ;src ;\
+;add  r0,r4,sgWifiAp_macaddr ;<-- this better?
+ ldr  r1,=WifiData_apmac9          ;dst ; apply APMAC (uh, from BSSID, too?)
+ bl   arm9_Wifi_CopyMacAddr             ;/  (or should this be from "sgWifiAp_macaddr"?)
+ add  r0,r4,sgWifiAp_ssid          ;src ;\
+ ldr  r1,=WifiData_ssid9           ;dst ;
+ ldrb r2,[r4,sgWifiAp_ssid_len]    ;len ; apply SSID string (and SSID len)
+ strb r2,[r1],1        ;dst[0]=len      ;
+ bl   memcopy_bytewise ;dst[1..N]=ssid  ;/
+ ldrb r0,[r4,sgWifiAp_channel]          ;\
+ ldr  r1,=WifiData_apchannel9           ; apply channel
+ strb r0,[r1]                           ;/
+ add  r0,r4,sgWifiAp_base_rates    ;src ;\
+ ldr  r1,=WifiData_baserates9      ;dst ; apply base rates
+ mov  r2,16                        ;len ;
+ bl   memcopy_bytewise ;dst[1..N]=ssid  ;/
+ .if 1
+   ldr  r1,=txt_chipset         ;\
+   bl   wrstr_r1                ; Chipset
+   .if with_nds_wifi AND with_dsi_wifi
+     ldr  r1,=dsi_wifi_flag     ;
+     ldrb r0,[r1]               ;
+     cmp  r0,0                  ;
+     bne  @@dsi                 ;
+   .endif                       ;
+   .if with_nds_wifi            ;
+    @@nds:                      ; ;\
+     ldr  r1,=txt_chipset_nds   ; ;
+     bl   wrstr_r1              ; ; NDS
+     bl   wrspc                 ; ;
+     ldr  r1,=nds_wifi_chip_id  ; ; ;\
+     ldrh r0,[r1]               ; ; ; Chip ID (1440h=DS, C340h=DS-Lite)
+     bl   wrhex16bit            ; ; ;/
+     ldr  r1,=txt_bb_rf_type    ; ; ;\
+     bl   wrstr_r1              ; ; ;
+     ldr  r1,=nds_wifi_bb_rf_type ; ; BB/RF chip type (02h/03h/05h)
+     ldrh r0,[r1]               ; ; ;
+     bl   wrhexdigit            ; ; ;/
+     b    @@chipset_done        ; ;/
+   .endif                       ;
+   .if with_dsi_wifi            ;
+    @@dsi:                      ; ;\
+     ldr  r1,=txt_chipset_dsi   ; ; DSi
+     bl   wrstr_r1              ; ;
+     bl   wrspc                 ; ;
+     ldr  r1,=sdio_chip_id      ; ; ;\
+     ldr  r0,[r1]               ; ; ; Chip ID (AR60xx)
+     bl   wrhex32bit            ; ; ;/
+     b    @@chipset_done        ; ;/
+   .endif                       ;
+  @@chipset_done:               ;/
+   bl   wrcrlf
+   ldr  r1,=txt_mac             ;\
+   bl   wrstr_r1                ; MAC
+   ldr  r1,=WifiData_MacAddr    ;
+   bl   wrmacaddr_from_r1       ;/
+   bl   wrcrlf
+   ldr  r1,=txt_bssid           ;\
+   bl   wrstr_r1                ; BSSID
+   ldr  r1,=WifiData_bssid9     ;
+   bl   wrmacaddr_from_r1       ;/
+   bl   wrcrlf
+  ;ldr  r1,=txt_apmac           ;\
+  ;bl   wrstr_r1                ; APMAC (same as BSSID)
+  ;ldr  r1,=WifiData_apmac9     ;
+  ;bl   wrmacaddr_from_r1       ;/
+  ;bl   wrcrlf
+   ldr  r1,=txt_ssid            ;\
+   bl   wrstr_r1                ; SSID
+   ldr  r1,=WifiData_ssid9      ;
+   ldrb r2,[r1],1   ;len        ;
+   cmp r2,0         ;len        ;
+   blne   wrstr_r1_len_r2       ;/
+   bl   wrcrlf
+   ldr  r1,=txt_channel         ;\
+   bl   wrstr_r1                ; CHANNEL
+   ldr  r1,=WifiData_apchannel9 ;
+   ldrb r0,[r1]                 ;
+   bl   wrdecimal               ;/
+   bl   wrcrlf
+   ldr  r1,=txt_rssi            ;\
+   bl   wrstr_r1                ; RSSI (signal strength)
+   ldr  r1,=vram_addr      ;\   ;
+   ldr  r0,[r1]            ;    ;
+   ldr  r1,=rssi_vram_addr ;    ;
+   str  r0,[r1]            ;/   ;
+   ldrh r0,[r4,sgWifiAp_rssi]   ;  (02h=MIN?, 146=high, 00h=MAX) (or is that 00h=uninit?)
+   bl   wrdecimal               ;/
+   bl   wrcrlf
+   ldr  r1,=txt_crypt           ;\
+   bl   wrstr_r1                ; CRYPT
+   ldr  r2,=WifiData_eapol9 ;\  ;
+   ldrb r2,[r2]             ;   ;
+   cmp  r2,EAPOL_TYPE_WPA   ;   ;
+   ldr  r1,=txt_crypt_wpa   ;   ;
+   bleq wrstr_r1            ;/  ;
+   ldr  r2,=WifiData_eapol9 ;\  ;
+   ldrb r2,[r2]             ;   ;
+   cmp  r2,EAPOL_TYPE_WPA2  ;   ;
+   ldr  r1,=txt_crypt_wpa2  ;   ;
+   bleq wrstr_r1            ;/  ;
+   ldr   r0,=WifiData_pair9 ;\  ;
+   ldrb  r0,[r0]            ;   ;
+   ldr   r1,=txt_crypt_oops ;   ;
+   cmp   r0,KEY_TYPE_NONE   ;   ;
+   ldreq r1,=txt_crypt_open ;   ;
+   cmp   r0,KEY_TYPE_WEP    ;   ;
+   ldreq r1,=txt_crypt_wep  ;   ;
+   cmp   r0,KEY_TYPE_TKIP   ;   ;
+   ldreq r1,=txt_crypt_tkip ;   ;
+   cmp   r0,KEY_TYPE_AES    ;   ;
+   ldreq r1,=txt_crypt_aes  ;   ;
+   bl    wrstr_r1           ;/  ;
+   ldr   r1,=WifiData_pair9 ;\  ;
+   ldrb  r1,[r1]            ;   ;
+   ldr   r0,=WifiData_grp9  ;   ;
+   ldrb  r0,[r0]            ;   ;
+   cmp   r0,r1              ;   ;
+   beq   @@same_key_type    ;/  ;
+   mov   r0,'/'             ;\  ;
+   bl    wrchr_r0           ;/  ;
+   ldr   r0,=WifiData_grp9  ;\  ;
+   ldrb  r0,[r0]            ;   ;
+   cmp   r0,r1              ;   ;
+   ldr   r1,=txt_crypt_oops ;   ;
+   cmp   r0,KEY_TYPE_NONE   ;   ;
+   ldreq r1,=txt_crypt_open ;   ;
+   cmp   r0,KEY_TYPE_WEP    ;   ;
+   ldreq r1,=txt_crypt_wep  ;   ;
+   cmp   r0,KEY_TYPE_TKIP   ;   ;
+   ldreq r1,=txt_crypt_tkip ;   ;
+   cmp   r0,KEY_TYPE_AES    ;   ;
+   ldreq r1,=txt_crypt_aes  ;   ;
+   bl    wrstr_r1           ;/  ;
+  @@same_key_type:              ;/
+   .if 01
+     bl   wrspc
+    ;ldr  r1,=txt_rsnie_wpa       ;\
+    ;bl   wrstr_r1                ; RSNIE WPA
+     ldr  r0,=WifiData_rsnie9_wpa ;
+     ldr  r0,[r0]                 ;
+     bl   wrhex8bit               ;/
+     bl   wrspc
+    ;ldr  r1,=txt_rsnie_wpa2      ;\
+    ;bl   wrstr_r1                ; RSNIE WPA2
+     ldr  r0,=WifiData_rsnie9_wpa2;
+     ldr  r0,[r0]                 ;
+     bl   wrhex8bit               ;/
+   .endif
+   bl   wrcrlf
+   ldr  r1,=txt_domain          ;\
+   bl   wrstr_r1                ; REG_DOMAIN
+   ldr  r0,=WifiData_reg_domain ;
+   ldrh r0,[r0]                 ;
+   bl   wrhex16bit              ;/
+   bl   wrspc                   ;\
+   ldr  r1,=WifiData_reg_channels         ;\enabled channels
+   ldr  r0,[r1]                 ;         ;/
+   bl   wrhex16bit              ;/
+;bl wrspc
+;ldrb r0,[r4,sgWifiAp_rssi_past+0]
+;bl   wrdecimal
+;bl wrspc
+;ldrb r0,[r4,sgWifiAp_rssi_past+1]
+;bl   wrdecimal
+;bl wrspc
+;ldrb r0,[r4,sgWifiAp_rssi_past+2]
+;bl   wrdecimal
+   bl   wrcrlf
+ .endif
+ ldr  r1,=WifiData_reqMode                              ;\
+ mov  r0,WIFIMODE_NORMAL                                ; set NORMAL mode
+ strh r0,[r1]                                           ;/
+ ldr  r1,=WifiData_reqReqFlags                          ;\
+ ldrh r0,[r1]                                           ; flags
+ orr  r0,WFLAG_REQ_APCONNECT+WFLAG_REQ_APCOPYVALUES     ;
+ strh r0,[r1]                                           ;/
+ ldr  r1,=wifi_connect_state                            ;\
+ mov  r0,1                                              ; state = 1
+ str  r0,[r1]                                           ;/
+ pop  r4,pc
+;---
+.pool
+;---
+txt_ip        db 'LOCAL IP  : ',0
+txt_remote_ip db 'REMOTE IP : ',0
+txt_subnet    db 'SUBNET    : ',0
+txt_gateway   db 'GATEWAY   : ',0
+txt_dns       db 'DNS       : ',0
+txt_mac     db 'MAC:   ',0
+txt_bssid   db 'BSSID: ',0
+;txt_apmac   db 'APMAC: ',0
+txt_ssid    db 'SSID:  ',0
+txt_channel db 'CHANNEL:',0
+txt_rssi    db 'RSSI:   ',0
+txt_crypt   db 'CRYPT:  ',0
+txt_domain  db 'DOMAIN: ',0
+;txt_rsnie_wpa  db 'RSNIE WPA  :',0
+;txt_rsnie_wpa2 db 'RSNIE WPA2 :',0
+txt_dhcp    db 'DHCP...',0dh,0
+txt_chipset     db 'INTERFACE: ',0
+txt_chipset_nds db 'NDS',0
+txt_chipset_dsi db 'DSi',0
+txt_crypt_oops  db '???',0
+txt_crypt_open  db 'OPEN',0
+txt_crypt_wep   db 'WEP',0
+txt_crypt_tkip  db 'TKIP',0
+txt_crypt_aes   db 'AES',0
+txt_crypt_wpa   db 'WPA-',0
+txt_crypt_wpa2  db 'WPA2-',0
+txt_bb_rf_type  db ' BB/RF:',0
+  ;XXXX WEP flag
+  ;XXXX rate (and rateset)
+*/
+
 int wifi_connect_state = 0; // -1==error, 0==searching, 1==associating, 2==dhcp'ing, 3==done, 4=searching wfc data
 Wifi_AccessPoint wifi_connect_point;
 
+
+// TODO : update for dsi wifi
 int Wifi_ConnectAP(Wifi_AccessPoint * apdata, int wepmode, int wepkeyid, u8 * wepkey) {
 	int i;
 	Wifi_AccessPoint ap;
@@ -516,6 +889,7 @@ void sgIP_DNS_Record_Localhost()
     rec->flags=SGIP_DNS_FLAG_ACTIVE | SGIP_DNS_FLAG_BUSY|SGIP_DNS_FLAG_RESOLVED;
 }
 
+// update for dsi wifi
 int Wifi_AssocStatus() {
 	switch(wifi_connect_state) {
 		case -1: // error
@@ -634,6 +1008,7 @@ int Wifi_AssocStatus() {
 #endif
 					WifiData->wepmode9=WifiData->wfc_enable[n]&0x03; // copy data
 					WifiData->wepkeyid9=(WifiData->wfc_enable[n]>>4)&7;
+                    // TODO : handle wpa key
 					for(i=0;i<16;i++) {
 						WifiData->wepkey9[i]=WifiData->wfc_wepkey[n][i];
 					}
@@ -776,6 +1151,13 @@ int Wifi_TransmitFunction(sgIP_Hub_HWInterface * hw, sgIP_memblock * mb) {
 	return 0;
 }
 
+//BUGGED/BLAH: the "sgHubHwi_MTU" isn't actually used anywhere! instead,
+//original code uses SGIP_MTU_OVERRIDE, whilst, ACTUALLY, it should use
+//the user-specified MTU from WFC in WifiFLASH)!
+//and, UNLESS there are different kinds of MTU's (one for Wifi and one for TCP
+//or so), if so... not sure about the purpose of the MTU WifiFLASH value.
+//oh, and that MTU value in WifiFLASH exists on DSi only, not on NDS.
+//- - -
 int Wifi_Interface_Init(sgIP_Hub_HWInterface * hw) {
 	hw->MTU=2300;
 	hw->ipaddr=(192)|(168<<8)|(1<<16)|(151<<24);
@@ -830,7 +1212,13 @@ int Wifi_CheckInit() {
 	return ((WifiData->flags7 & WFLAG_ARM7_ACTIVE) && (WifiData->flags9 & WFLAG_ARM9_ARM7READY));
 }
 
-
+// BUGGED/UNRELIABLE: if "SGIP_MEMBLOCK_DYNAMIC_MALLOC_ALL" is disabled, then
+// "arm9_Wifi_RxRawReadPacket" couldn't be used to copy MemBlks from packets
+// bigger than "SGIP_MEMBLOCK_FIRSTINTERNALSIZE" (aka "1600-16-16" aka "1568"),
+// so below MemBlk data copying WON'T WORK if packet body is bigger than 1568
+// (dunno if that could happen in practice; it should be physically possible,
+// but common network protocols MIGHT tend to use only smaller packet bodys?)
+// - - -
 void Wifi_Update() {
 	int cnt;
 	int base, base2, len, fulllen;
@@ -1007,7 +1395,15 @@ void Wifi_Sync() {
 
 // wifi timer function, to update internals of sgIP
 //---------------------------------------------------------------------------------
+
 void Timer_50ms(void) {
+
+// wifi timer3   <--- uh, original code does NOT ack IRQ_TIMER3 (unlike IRQ_WIFI)
+// TODO : implements this
+/* mov  r1,4000000h               ;\
+ mov  r0,IRQ_TIMER3             ; wifi timer3   <--- uh, original code does NOT ack IRQ_TIMER3 (unlike IRQ_WIFI)
+ str  r0,[r1,REG_IF]            ;/*/
+
 //---------------------------------------------------------------------------------
 	Wifi_Timer(50);
 }
@@ -1032,6 +1428,14 @@ void wifiValue32Handler(u32 value, void* data) {
 	}
 }
 
+// BUGGED: original code does issue an unneccassary "swiWaitForVBlank" AFTER
+// receiving the final "ASSOCSTATUS_ASSOCIATED"
+// also, "swiWaitForVBlank" is a bit overkill (waiting for ANY interrupt should
+// work smoother; ideally with an IRQ generated upon ARM7 status changes)
+// and, if "swiWaitForVBlank" is literally using the SWI waitvblank function:
+// that function is bugged in DSi-mode.
+// - - -
+// TODO : fix this
 //---------------------------------------------------------------------------------
 bool Wifi_InitDefault(bool useFirmwareSettings) {
 //---------------------------------------------------------------------------------

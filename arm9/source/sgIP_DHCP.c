@@ -59,6 +59,25 @@ int sgIP_DHCP_IsDhcpIp(unsigned long ip) { // check if the IP address was assign
 	return ip==dhcp_rcvd_ip;
 }
 
+
+//note: original code did have this split into two functions:
+//  "sgIP_DHCP_BeginDgram" and "sgIP_DHCP_SendDgram"
+//that would have allowed it to insert extra options between the two
+//function calls (the code didn't actually do that), or to modify some
+//settings between the calls (that was done for "ciaddr=ipaddr" upon
+//RELEASE, and that's done automatically in below code).
+//anyways, having the two functions merged into a single function is nicer.
+//- - -
+void sgIP_DHCP_CreateAndSendDgram(int dgramtype) {
+    sgIP_DHCP_BeginDgram(dgramtype);
+    
+    if(dgramtype==DHCP_TYPE_RELEASE) {
+        dhcp_p->ciaddr=dhcp_int->ipaddr;    
+    }
+    
+    sgIP_DHCP_SendDgram();    
+}
+
 void sgIP_DHCP_SendDgram() {
    struct sockaddr_in sain;
    int len_dhcp;

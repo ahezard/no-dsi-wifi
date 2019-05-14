@@ -25,6 +25,13 @@ SOFTWARE.
 #include "sgIP_Hub.h"
 #include "sgIP_ARP.h"
 
+//     the "Hub" software layer would be useful ONLY when supporting
+//     multiple hardware ports (eg. ethernet AND wifi)
+//     however, the NDS uses ONLY wifi (and SGIP_HUB_MAXPROTOCOLINTERFACES
+//      and SGIP_HUB_MAXHWINTERFACES are both set to "1"), so most of the
+//      "Hub" code could be replaced by directly accessing wifi functions)
+//------------------
+
 //////////////////////////////////////////////////////////////////////////
 // Global vars
 

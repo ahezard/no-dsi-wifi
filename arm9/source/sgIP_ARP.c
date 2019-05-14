@@ -148,10 +148,15 @@ void sgIP_ARP_Timer100ms() {
 
 void sgIP_ARP_FlushInterface(sgIP_Hub_HWInterface * hw) {
 	int i;
+    
+    int oldIME = enterCriticalSection();
+    
 	for(i=0;i<SGIP_ARP_MAXENTRIES;i++) {
 		if(ArpRecords[i].linked_interface==hw) ArpRecords[i].flags=0;
 		if(hw==0) ArpRecords[i].flags=0; // flush all interfaces
 	}
+    
+    leaveCriticalSection(oldIME);
 }
  // don't *really* need to process this, but it helps.
 int sgIP_ARP_ProcessIPFrame(sgIP_Hub_HWInterface * hw, sgIP_memblock * mb) {
@@ -160,13 +165,18 @@ int sgIP_ARP_ProcessIPFrame(sgIP_Hub_HWInterface * hw, sgIP_memblock * mb) {
 }
 int sgIP_ARP_ProcessARPFrame(sgIP_Hub_HWInterface * hw, sgIP_memblock * mb) {
 	int i, j, ip;
-   if(!hw || !mb) return 0;
+    
+    if(!hw || !mb) return 0;
+   
+    int oldIME = enterCriticalSection();
+    
 	sgIP_memblock_exposeheader(mb,-14); // hide 14 bytes at the start temporarily...
 	// look at arp frame...
 	sgIP_Header_ARP * arp = (sgIP_Header_ARP *) mb->datastart;
 
 	if(!sgIP_ARP_Check_isok(hw,mb,arp)) {
 		sgIP_memblock_free(mb);
+        leaveCriticalSection(oldIME);
 		return 0; // error - arp header incorrect somehow.
 	}
 	sgIP_memblock_exposeheader(mb,14); // re-expose 14 bytes at the start...
@@ -177,6 +187,7 @@ int sgIP_ARP_ProcessARPFrame(sgIP_Hub_HWInterface * hw, sgIP_memblock * mb) {
 		SGIP_DEBUG_MESSAGE(("ARP: request IP %08X",ip));
 		if(ip==hw->ipaddr) {// someone's asking for our info, toss them a reply.
 			sgIP_ARP_SendARPResponse(hw,mb);
+            leaveCriticalSection(oldIME);
 			return 0;
 		}
 	}
@@ -195,13 +206,18 @@ int sgIP_ARP_ProcessARPFrame(sgIP_Hub_HWInterface * hw, sgIP_memblock * mb) {
 	}
 
 	sgIP_memblock_free(mb);
+    
+    leaveCriticalSection(oldIME);
 	return 0;
 }
 int sgIP_ARP_SendProtocolFrame(sgIP_Hub_HWInterface * hw, sgIP_memblock * mb, unsigned short protocol, unsigned long destaddr) {
 	int i,j;
 	int m;
 	sgIP_Header_Ethernet * ether;
-   if(!hw || !mb) return 0;
+    if(!hw || !mb) return 0;
+    
+    int oldIME = enterCriticalSection();
+    
 	sgIP_memblock_exposeheader(mb,14); // add 14 bytes at the start for the header
 
 	if(sgIP_is_broadcast_address(hw,destaddr)) {
@@ -212,7 +228,9 @@ int sgIP_ARP_SendProtocolFrame(sgIP_Hub_HWInterface * hw, sgIP_memblock * mb, un
 			ether->dest_mac[j]= 0xFF; // broadcast destination
 		}
 		ether->protocol=protocol;
-		return sgIP_Hub_SendRawPacket(hw,mb); // this function will free the memory block when it's done.
+        int ret = sgIP_Hub_SendRawPacket(hw,mb); // this function will free the memory block when it's done.
+        leaveCriticalSection(oldIME);
+		return ret;
 	}
 
 	i=sgIP_FindArpSlot(hw,destaddr);
@@ -226,15 +244,19 @@ int sgIP_ARP_SendProtocolFrame(sgIP_Hub_HWInterface * hw, sgIP_memblock * mb, un
 				ether->dest_mac[j]= ArpRecords[i].hw_address[j];
 			}
 			ether->protocol=protocol;
-			return sgIP_Hub_SendRawPacket(hw,mb); // this function will free the memory block when it's done.
+            int ret = sgIP_Hub_SendRawPacket(hw,mb); // this function will free the memory block when it's done.
+            leaveCriticalSection(oldIME);
+			return ret;
 		} else { // we don't have the address, but are looking for it.
 			if(ArpRecords[i].queued_packet) { // if there is already a queued packet, reject the new one.
 				sgIP_memblock_free(mb);
+                leaveCriticalSection(oldIME);
 				return 0; // couldn't send.
 			} else {		
 				sgIP_memblock_exposeheader(mb,-14); // re-hide ethernet header.
 				ArpRecords[i].queued_packet=mb; // queue packet.
 				ArpRecords[i].linked_protocol=protocol; // queue packet.
+                leaveCriticalSection(oldIME);
 				return 0;
 			}
 		}
@@ -250,6 +272,9 @@ int sgIP_ARP_SendProtocolFrame(sgIP_Hub_HWInterface * hw, sgIP_memblock * mb, un
 	ArpRecords[m].queued_packet=mb;
 	ArpRecords[m].linked_protocol=protocol;
 	sgIP_ARP_SendARPRequest(hw,protocol,destaddr);
+    
+    leaveCriticalSection(oldIME);
+    
 	return 0; // queued, but not sent yet.
 }
 
@@ -291,10 +316,18 @@ int sgIP_ARP_SendARPResponse(sgIP_Hub_HWInterface * hw, sgIP_memblock * mb) {
 }
 int sgIP_ARP_SendGratARP(sgIP_Hub_HWInterface * hw) {
 	int i;
-   if(!hw) return 0;
+    
+    if(!hw) return 0;
+   
+    int oldIME = enterCriticalSection();
+    
 	sgIP_memblock * mb = sgIP_memblock_alloc(SGIP_HEADER_ARP_BASESIZE+2*4 + 2*hw->hwaddrlen);
-	if(!mb) return 0;
 
+	if(!mb) { 
+        leaveCriticalSection(oldIME);
+        return 0;
+    }
+    
 	// Construct ARP packet
 	sgIP_Header_ARP * arp = (sgIP_Header_ARP *) mb->datastart;
 	arp->hwspace=htons(1); // ethernet
@@ -315,9 +348,12 @@ int sgIP_ARP_SendGratARP(sgIP_Hub_HWInterface * hw) {
 		ether->dest_mac[i]= 0xFF; // broadcast packet
 	}
 	ether->protocol=htons(0x0806); // ARP protocol
-
+    int ret = sgIP_Hub_SendRawPacket(hw,mb);
+    
+    leaveCriticalSection(oldIME);
+    
 	// Send ethernet packet
-	return sgIP_Hub_SendRawPacket(hw,mb); // this function will free the memory block when it's done.
+	return ret; // this function will free the memory block when it's done.
 }
 int sgIP_ARP_SendARPRequest(sgIP_Hub_HWInterface * hw, int protocol, unsigned long protocol_addr) {
 	int i;

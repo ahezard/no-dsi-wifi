@@ -166,6 +166,11 @@ sgIP_DNS_Record * sgIP_DNS_FindDNSRecord(const char * name) {
    return 0;
 }
 
+//uh, using an idle-count would seem better than the TTL (time-to-live) here
+//(the TTL comes from the server, and if it's assigning different TTL's to
+//different IP's (?), then the IP's with bigger TTL's would dominate the world,
+//even when accessing the IP's with smaller TTL's much more frequently).
+//- - -
 sgIP_DNS_Record * sgIP_DNS_GetUnusedRecord() {
    int i,j,minttl;
    SGIP_INTR_PROTECT();
